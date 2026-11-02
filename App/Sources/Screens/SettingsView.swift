@@ -219,8 +219,8 @@ struct SettingsView: View {
                 }
                     .buttonStyle(NeoButtonStyle(fill: Palette.surfaceOnFill, large: false))
             }
-            ForEach(Array(AlarmLog.lines.enumerated()), id: \.offset) { index, line in
-                NeoRow(title: index == 0 ? L("Nút gần nhất trên báo thức", "Latest alarm button") : "", detail: line) { EmptyView() }
+            if !AlarmLog.lines.isEmpty {
+                NeoRow(title: L("Nút gần nhất trên báo thức", "Latest alarm buttons"), detail: AlarmLog.lines.joined(separator: "\n")) { EmptyView() }
             }
             NeoRow(title: L("Dữ liệu cho widget", "Widget data"), detail: SharedStorage.container != nil ? L("có App Group", "App Group found") : L("không có App Group", "no App Group")) { EmptyView() }
         }

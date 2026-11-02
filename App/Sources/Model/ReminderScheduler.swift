@@ -20,7 +20,8 @@ nonisolated struct ReminderScheduler: Sendable {
     /// 2: Stop snoozes and Taken is the secondary button (0.4.2).
     /// 3: Slide to stop (and the side button) is Taken, the button is Snooze (0.5.1).
     /// 4: Slide to stop and the side button only silence this ring, the button is Taken (0.5.3).
-    private static let buttonsVersion = 4
+    /// 5: Taken opens the app and asks first (0.5.4).
+    private static let buttonsVersion = 5
     /// The alarm made by "Test alarm" in Settings; reschedules leave it alone.
     private static let testAlarmKey = "testAlarmID"
 
@@ -158,15 +159,14 @@ nonisolated struct ReminderScheduler: Sendable {
             schedule: .fixed(date),
             attributes: attributes(title: title, names: names, snooze: snooze),
             stopIntent: StopIntent(medications: ids),
-            secondaryIntent: MarkTakenIntent(medications: ids)
+            secondaryIntent: ConfirmTakenIntent(medications: ids)
         )
     }
 
-    /// Slide to stop and the side button only silence this ring, and the next reminder follows within the snooze length:
-    /// the side button snoozes, as in the Clock app. Since iOS 26.1 the system draws its own Stop and the side button runs
-    /// it; 0.4.x and 0.5.1 put Taken there and a side button press logged the dose (seen on a phone, 02/11/2026). Only the
-    /// Taken button logs the dose. The Simulator rings AlarmKit alarms but shows no alarm screen, so none of this can be
-    /// tried there.
+    /// Slide to stop and the side button only silence this ring, and the next reminder follows within the snooze length.
+    /// Taken opens the app, which asks before logging: on a locked phone a hardware button press ran Stop once and the
+    /// Taken button another time (0.5.2 and 0.5.3 on a phone, 02/11/2026), so no button on the alarm may log a dose by
+    /// itself. The Simulator shows the alarm only as a banner on an unlocked screen, so this cannot be tried there.
     private static func attributes(title: String, names: String, snooze: TimeInterval) -> AlarmAttributes<DoseAlarmMetadata> {
         let taken = AlarmButton(text: LocalizedStringResource(stringLiteral: L("Đã uống", "Taken")), textColor: .black, systemImageName: "checkmark")
         let alert: AlarmPresentation.Alert
@@ -215,7 +215,7 @@ nonisolated struct ReminderScheduler: Sendable {
     /// The `medications` text of the test alarm's intents: they log what was pressed and change nothing else.
     static let testIDs = "test"
 
-    /// Taken on the test alarm. A `.custom` button does not stop the ringing by itself; for a real dose `markTaken` does.
+    /// Stops the test alarm. A `.custom` button does not stop the ringing by itself.
     static func stopTestAlarm() {
         guard let id = UserDefaults.standard.string(forKey: testAlarmKey).flatMap(UUID.init(uuidString:)) else { return }
         try? AlarmManager.shared.cancel(id: id)
@@ -250,6 +250,29 @@ struct StopIntent: LiveActivityIntent {
         if medications != ReminderScheduler.testIDs {
             AppModel.shared.silence(medications.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
         }
+        return .result()
+    }
+}
+
+/// Taken on the alarm: opens the app, silences the ring and asks "Taken?". Logging needs that second tap, so a hardware
+/// button that presses this button by accident logs nothing.
+struct ConfirmTakenIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Taken"
+    static let isDiscoverable = false
+    static let openAppWhenRun = true
+
+    /// Medication ids separated by commas.
+    @Parameter(title: "Medications")
+    var medications: String
+
+    init() { medications = "" }
+
+    init(medications: String) { self.medications = medications }
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        AlarmLog.record(L("Nút Đã uống: mở app hỏi xác nhận", "Taken button: asked in the app"))
+        AppModel.shared.askTaken(medications)
         return .result()
     }
 }

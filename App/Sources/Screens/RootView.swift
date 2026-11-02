@@ -11,6 +11,7 @@ struct RootView: View {
     /// Taps per tab, to bounce the icon that was tapped.
     @State private var taps = [0, 0, 0, 0]
     @State private var editor: EditorRequest?
+    @Environment(AppModel.self) private var model
 
     /// One request per tap, so opening the same medication twice still presents.
     private struct EditorRequest: Identifiable {
@@ -44,6 +45,18 @@ struct RootView: View {
         .sheet(item: $editor) { MedicationEditor(medication: $0.medication) }
         .environment(\.editMedication, EditMedicationAction { editor = EditorRequest(medication: $0) })
         .onAppear { if let selectedTab { tab = selectedTab } }
+        // Here at the root, not on a card: the question must survive tab changes (see the Add medication fix in 0.3.2).
+        .alert(L("Đã uống \(model.takenQuestion?.names ?? "")?", "Taken \(model.takenQuestion?.names ?? "")?"),
+               isPresented: Binding(get: { model.takenQuestion != nil }, set: { if !$0 { model.takenQuestion = nil } }),
+               presenting: model.takenQuestion) { question in
+            Button(L("Đã uống", "Taken")) {
+                guard !question.ids.isEmpty else { return }
+                Task { await model.markTaken(question.ids) }
+            }
+            Button(L("Chưa", "Not yet"), role: .cancel) {}
+        } message: { _ in
+            Text(L("Chưa uống thì lát nữa báo thức kêu lại.", "If not, the alarm rings again soon."))
+        }
     }
 
     private var tabBar: some View {
