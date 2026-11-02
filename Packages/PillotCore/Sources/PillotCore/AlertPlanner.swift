@@ -33,10 +33,11 @@ public struct MedicationReminders: Sendable {
         self.missedCount = missedCount
     }
 
-    public init(_ medication: Medication, now: Date, language: Language) {
+    /// `cadence`: how often the pending dose rings again, the snooze length (see `Planner.events`).
+    public init(_ medication: Medication, now: Date, language: Language, cadence: TimeInterval? = nil) {
         let summary = medication.planner.summary(now: now)
         self.init(
-            id: medication.id, name: medication.name, events: summary.events(),
+            id: medication.id, name: medication.name, events: summary.events(cadence: cadence),
             refillMessage: medication.settings.pills?.refillMessage(medication.settings.refillReminder, language: language),
             missedCount: summary.outstandingMissed().count)
     }
