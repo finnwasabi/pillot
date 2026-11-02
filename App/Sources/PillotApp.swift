@@ -28,6 +28,12 @@ struct PillotApp: App {
                 .environment(\.locale, AppLanguage.locale)
                 .fontDesign(.rounded)
                 .preferredColorScheme(model.theme.colorScheme)
+                .task {
+                    // Debug builds only: `-testAlarm YES` schedules the test alarm at launch, for the Simulator.
+                    #if DEBUG
+                    if UserDefaults.standard.bool(forKey: "testAlarm") { NSLog("PILLOTDBG test alarm: %@", String(describing: await model.testAlarm())) }
+                    #endif
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             // Opening the app refills the reminders for the next H days.
