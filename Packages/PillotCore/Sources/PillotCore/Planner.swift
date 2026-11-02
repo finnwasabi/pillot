@@ -76,7 +76,9 @@ public struct PlannerSummary: Sendable {
     public func dayStatuses() -> [Date: DoseStatus] { planner.dayStatuses(timeline: timeline, now: now) }
 
     /// Same as `Planner.events`, without walking the history again.
-    public func events(horizonDays: Int = 14) -> [ReminderEvent] { planner.events(from: dose, now: now, horizonDays: horizonDays) }
+    public func events(horizonDays: Int = 14, cadence: TimeInterval? = nil) -> [ReminderEvent] {
+        planner.events(from: dose, now: now, horizonDays: horizonDays, cadence: cadence)
+    }
 }
 
 /// Computes the schedule from settings and history. Never reads the clock; `now` is always a parameter.
@@ -238,23 +240,18 @@ public struct Planner: Sendable {
         return result
     }
 
-    /// When a snooze rings again. Never past the deadline, and the deadline stays put.
-    public func snoozeUntil(now: Date) -> Date {
-        let wake = now.addingTimeInterval(max(60, settings.snoozeInterval))
-        let deadline = currentDose(now: now).deadlineAt
-        return now < deadline ? min(wake, deadline) : wake
-    }
-
     /// Reminder events for the next `horizonDays` days, sorted and without duplicate times.
     /// The pending dose gets the whole chain (repeats, hourly, final, deadline, overdue). Doses after it are planned as if
     /// never confirmed, with only their main reminder and the ringing deadline: full chains for every future dose filled
     /// the 300-alarm budget in 57 hours with four medications. "Taken" or opening the app recomputes, and the next dose
     /// then becomes the pending one with its whole chain.
-    public func events(now: Date, horizonDays: Int = 14) -> [ReminderEvent] {
-        events(from: currentDose(now: now), now: now, horizonDays: horizonDays)
+    /// `cadence`: the app's snooze length. The pending dose then rings again every `cadence` after the main time and
+    /// after the deadline, until taken; `nil` keeps the spacing from the settings.
+    public func events(now: Date, horizonDays: Int = 14, cadence: TimeInterval? = nil) -> [ReminderEvent] {
+        events(from: currentDose(now: now), now: now, horizonDays: horizonDays, cadence: cadence)
     }
 
-    func events(from pending: Dose, now: Date, horizonDays: Int) -> [ReminderEvent] {
+    func events(from pending: Dose, now: Date, horizonDays: Int, cadence: TimeInterval?) -> [ReminderEvent] {
         if settings.asNeeded { return [] }
         let end = now.addingTimeInterval(TimeInterval(horizonDays) * VietnamClock.day)
         var dose = pending
@@ -265,7 +262,7 @@ public struct Planner: Sendable {
                 dose = doseAfterPause(pause.end)
                 continue
             }
-            let planned = isPending ? chain(for: dose) : mainAndDeadline(for: dose)
+            let planned = isPending ? chain(for: dose, cadence: cadence) : mainAndDeadline(for: dose)
             isPending = false
             for event in planned where event.date > now && event.date <= end {
                 if pauses.contains(where: { $0.contains(event.date) }) { continue }
@@ -641,42 +638,48 @@ public struct Planner: Sendable {
          ReminderEvent(date: dose.deadlineAt, kind: .deadline, requiresSound: true, dueAt: dose.dueAt, deadlineAt: dose.deadlineAt)]
     }
 
-    private func chain(for dose: Dose) -> [ReminderEvent] {
+    private func chain(for dose: Dose, cadence: TimeInterval?) -> [ReminderEvent] {
         func event(_ date: Date, _ kind: ReminderKind) -> ReminderEvent {
             ReminderEvent(date: date, kind: kind, requiresSound: kind == .deadline || kind == .overdue, dueAt: dose.dueAt, deadlineAt: dose.deadlineAt)
         }
         let due = dose.dueAt, deadline = dose.deadlineAt
+        let hourly = max(60, settings.hourlyInterval)
+        // With a cadence, the first stretch after the main time rings every `cadence` (like a snooze that nobody has to press),
+        // as long as the stretch after the deadline. ponytail: the stretches are capped at `overdueBurst` and then go hourly,
+        // because 9-minute rings for the whole 12-hour window would take 80 alarms per dose out of the 300.
+        let repeatStep = cadence.map { max(60, $0) } ?? max(60, settings.repeatInterval)
+        let repeatCount = cadence.map { Int(overdueBurst / max(60, $0)) } ?? max(0, settings.repeatCount)
+        let finalStep = cadence.map { max(60, $0) } ?? max(60, settings.finalInterval)
         var list = [event(due, .main)]
-        let repeatStep = max(60, settings.repeatInterval)
-        for i in stride(from: 1, through: max(0, settings.repeatCount), by: 1) {
+        for i in stride(from: 1, through: repeatCount, by: 1) {
             list.append(event(due.addingTimeInterval(TimeInterval(i) * repeatStep), .repeat))
         }
-        let lastRepeat = due.addingTimeInterval(TimeInterval(max(0, settings.repeatCount)) * repeatStep)
+        let lastRepeat = due.addingTimeInterval(TimeInterval(repeatCount) * repeatStep)
         let finalStart = deadline.addingTimeInterval(-max(0, settings.finalWindow))
-        var hourly = lastRepeat.addingTimeInterval(max(60, settings.hourlyInterval))
-        while hourly < finalStart {
-            list.append(event(hourly, .hourly))
-            hourly = hourly.addingTimeInterval(max(60, settings.hourlyInterval))
+        var next = lastRepeat.addingTimeInterval(hourly)
+        while next < finalStart {
+            list.append(event(next, .hourly))
+            next = next.addingTimeInterval(hourly)
         }
         var final = finalStart
         while final < deadline {
             if final >= due { list.append(event(final, .final)) }
-            final = final.addingTimeInterval(max(60, settings.finalInterval))
+            final = final.addingTimeInterval(finalStep)
         }
         list.append(event(deadline, .deadline))
         // Past the deadline, all ringing: repeats like after the main time, then the final cadence until `overdueBurst`,
         // then hourly until the late window ends.
         let burstEnd = deadline.addingTimeInterval(overdueBurst)
-        var overdue: [Date] = (0..<max(0, settings.repeatCount)).map { deadline.addingTimeInterval(TimeInterval($0 + 1) * repeatStep) }
-        var next = (overdue.last ?? deadline).addingTimeInterval(max(60, settings.finalInterval))
+        var overdue: [Date] = (0..<repeatCount).map { deadline.addingTimeInterval(TimeInterval($0 + 1) * repeatStep) }
+        next = (overdue.last ?? deadline).addingTimeInterval(finalStep)
         while next <= burstEnd {
             overdue.append(next)
-            next = next.addingTimeInterval(max(60, settings.finalInterval))
+            next = next.addingTimeInterval(finalStep)
         }
-        next = max(burstEnd, overdue.last ?? deadline).addingTimeInterval(max(60, settings.hourlyInterval))
+        next = max(burstEnd, overdue.last ?? deadline).addingTimeInterval(hourly)
         while next <= dose.lateUntil {
             overdue.append(next)
-            next = next.addingTimeInterval(max(60, settings.hourlyInterval))
+            next = next.addingTimeInterval(hourly)
         }
         let before = list.filter { $0.date >= due && $0.date <= deadline }
         return before + overdue.filter { $0 <= dose.lateUntil }.map { event($0, .overdue) }
