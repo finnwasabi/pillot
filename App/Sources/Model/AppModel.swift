@@ -223,8 +223,8 @@ final class AppModel {
         scheduler.silence(ids)
     }
 
-    /// The test alarm in Settings; `false` when it could not be scheduled.
-    func testAlarm() async -> Bool {
+    /// The test alarm in Settings; the error text when it could not be scheduled.
+    func testAlarm() async -> String? {
         await scheduler.scheduleTest(snooze: TimeInterval(snoozeMinutes * 60))
     }
 
@@ -377,7 +377,7 @@ final class AppModel {
             } else if !alarmsAvailable {
                 scheduleIssue = L("Chưa có quyền báo thức nên máy im lặng hay bật Focus sẽ không kêu. Bật trong Cài đặt > Pillot.", "Alarms are not allowed, so nothing rings on silent or in Focus. Turn them on in Settings > Pillot.")
             } else if failures > 0 {
-                scheduleIssue = L("Có \(failures) lần nhắc không hẹn được. Mở lại app để thử lại.", "\(failures) reminders could not be scheduled. Reopen the app to retry.")
+                scheduleIssue = L("Có \(failures) lần nhắc không hẹn được: \(result.firstError ?? "?"). Mở lại app để thử lại.", "\(failures) reminders could not be scheduled: \(result.firstError ?? "?"). Reopen the app to retry.")
             } else {
                 scheduleIssue = nil
             }

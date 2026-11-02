@@ -31,6 +31,8 @@ nonisolated struct ReminderScheduler: Sendable {
         /// Alarms and notifications cancelled or added by this pass; the rest stayed as they were.
         var changed = 0
         var failures = 0
+        /// What AlarmKit or the notification center said the first time something could not be scheduled.
+        var firstError: String?
         /// The latest alert that is scheduled: reminders stop after this unless the app runs again.
         var lastAlert: Date?
     }
@@ -97,6 +99,7 @@ nonisolated struct ReminderScheduler: Sendable {
             } catch {
                 failed.insert(index)
                 report.failures += 1
+                report.firstError = report.firstError ?? String(describing: error)
             }
         }
         defaults.set(kept, forKey: Self.alarmMedicationsKey)
@@ -135,6 +138,7 @@ nonisolated struct ReminderScheduler: Sendable {
                 report.notifications += 1
             } catch {
                 report.failures += 1
+                report.firstError = report.firstError ?? String(describing: error)
             }
         }
         report.changed += noteDiff.cancel.count + noteDiff.add.count
@@ -148,7 +152,9 @@ nonisolated struct ReminderScheduler: Sendable {
 
     private static func configuration(date: Date, title: String, names: String, ids: String, snooze: TimeInterval) -> AlarmManager.AlarmConfiguration<DoseAlarmMetadata> {
         AlarmManager.AlarmConfiguration(
-            countdownDuration: nil,
+            // Keep a countdown duration: with nil, AlarmKit refused every alarm (error code 0) in 0.5.1. The Snooze button is
+            // `.custom` and never starts it.
+            countdownDuration: Alarm.CountdownDuration(preAlert: nil, postAlert: snooze),
             schedule: .fixed(date),
             attributes: attributes(title: title, names: names, snooze: snooze),
             stopIntent: StopIntent(medications: ids),
@@ -192,13 +198,17 @@ nonisolated struct ReminderScheduler: Sendable {
     }
 
     /// An alarm in a minute with the real buttons and no medication, to try slide, button and side button.
-    func scheduleTest(snooze: TimeInterval) async -> Bool {
+    func scheduleTest(snooze: TimeInterval) async -> String? {
         let id = UUID()
         let names = "Pillot"
         let configuration = Self.configuration(date: .now.addingTimeInterval(60), title: L("Thử báo thức Pillot", "Pillot alarm test"), names: names, ids: Self.testIDs, snooze: snooze)
-        guard (try? await AlarmManager.shared.schedule(id: id, configuration: configuration)) != nil else { return false }
+        do {
+            _ = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
+        } catch {
+            return String(describing: error)
+        }
         UserDefaults.standard.set(id.uuidString, forKey: Self.testAlarmKey)
-        return true
+        return nil
     }
 
     /// The `medications` text of the test alarm's intents: they log what was pressed and change nothing else.
@@ -264,6 +274,9 @@ enum AlarmLog {
     private static let key = "alarmLog"
 
     static func record(_ what: String, at date: Date = .now) {
+        #if DEBUG
+        NSLog("PILLOTDBG alarm button: %@", what)
+        #endif
         var lines = UserDefaults.standard.stringArray(forKey: key) ?? []
         lines.insert("\(TimeFormatting.vn(date)) \(what)", at: 0)
         UserDefaults.standard.set(Array(lines.prefix(5)), forKey: key)
