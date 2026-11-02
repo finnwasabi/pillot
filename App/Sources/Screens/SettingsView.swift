@@ -205,10 +205,18 @@ struct SettingsView: View {
                                           "\(when($0.at)), took \(Self.milliseconds($0.duration)) ms, \($0.result.changed) changed") } ?? "-") { EmptyView() }
             NeoRow(title: L("Chạy nền gần nhất", "Last background run"), detail: model.lastBackgroundRefresh.map(when) ?? L("chưa bao giờ", "never")) { EmptyView() }
             if let failures = report?.result.failures, failures > 0 {
-                NeoRow(title: L("Hẹn lỗi", "Failed"), detail: "\(failures)") { EmptyView() }
+                NeoRow(title: L("Hẹn lỗi", "Failed"), detail: "\(failures): \(report?.result.firstError ?? "")") { EmptyView() }
             }
             NeoRow(title: L("Báo thức thử", "Test alarm"), detail: testAlarmState ?? L("kêu sau 1 phút, ghi lại nút bấm", "rings in a minute, logs the button")) {
-                Button(L("Hẹn thử", "Try")) { Task { testAlarmState = await model.testAlarm() ? L("đã hẹn, kêu lúc \(TimeFormatting.vn(.now.addingTimeInterval(60)))", "set, rings at \(TimeFormatting.vn(.now.addingTimeInterval(60)))") : L("không hẹn được", "could not be set") } }
+                Button(L("Hẹn thử", "Try")) {
+                    Task {
+                        if let error = await model.testAlarm() {
+                            testAlarmState = error
+                        } else {
+                            testAlarmState = L("đã hẹn, kêu lúc \(TimeFormatting.vn(.now.addingTimeInterval(60)))", "set, rings at \(TimeFormatting.vn(.now.addingTimeInterval(60)))")
+                        }
+                    }
+                }
                     .buttonStyle(NeoButtonStyle(fill: Palette.surfaceOnFill, large: false))
             }
             ForEach(Array(AlarmLog.lines.enumerated()), id: \.offset) { index, line in

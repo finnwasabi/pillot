@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-02
+
+### Fixed
+- 0.5.1 could not set any alarm: iOS refused every one (Diagnostics showed "Failed" and 0 alarms set) because the alarm was
+  made without a countdown duration. Alarms are set again, and Diagnostics and the Today banner now show the error iOS
+  gave instead of only a count.
+
 ## [0.5.1] - 2026-11-02
 
 ### Changed
@@ -259,7 +266,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/finnwasabi/pillot/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/finnwasabi/pillot/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/finnwasabi/pillot/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/finnwasabi/pillot/compare/v0.4.0...v0.4.1
