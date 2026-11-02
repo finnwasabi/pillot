@@ -223,6 +223,30 @@ final class AppModel {
         scheduler.silence(ids)
     }
 
+    /// "Taken?" asked after the Taken button on an alarm; RootView shows it.
+    struct TakenQuestion: Identifiable {
+        let id = UUID()
+        /// Empty for the test alarm.
+        let ids: [UUID]
+        let names: String
+    }
+    var takenQuestion: TakenQuestion?
+
+    /// The Taken button on an alarm: silence the ring now, log only once the person confirms in the app.
+    func askTaken(_ medications: String) {
+        guard medications != ReminderScheduler.testIDs else {
+            ReminderScheduler.stopTestAlarm()
+            takenQuestion = TakenQuestion(ids: [], names: L("thuốc thử", "the test pill"))
+            return
+        }
+        let ids = medications.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+        // An empty list (an alarm from before medications) means every medication due now, as in `markTaken`.
+        let meds = ids.isEmpty ? medications.isEmpty ? self.medications.filter { $0.planner.currentDose(now: .now).dueAt <= .now } : [] : ids.compactMap(medication)
+        guard !meds.isEmpty else { return }
+        scheduler.silence(meds.map(\.id))
+        takenQuestion = TakenQuestion(ids: meds.map(\.id), names: AlertPlanner.names(meds.map(\.name), language: language))
+    }
+
     /// The test alarm in Settings; the error text when it could not be scheduled.
     func testAlarm() async -> String? {
         await scheduler.scheduleTest(snooze: TimeInterval(snoozeMinutes * 60))
