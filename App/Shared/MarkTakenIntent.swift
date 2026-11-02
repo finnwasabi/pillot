@@ -15,10 +15,18 @@ struct MarkTakenIntent: LiveActivityIntent {
 
     init(ids: [UUID]) { medications = ids.map(\.uuidString).joined(separator: ",") }
 
+    init(medications: String) { self.medications = medications }
+
     @MainActor
     func perform() async throws -> some IntentResult {
         #if !WIDGET
-        await AppModel.shared.markTaken(medications.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+        AlarmLog.record(L("Nút Đã uống (báo thức hoặc widget): ghi Đã uống", "Taken button (alarm or widget): logged Taken"))
+        // The test alarm in Settings has no medication, and an empty list would mean every medication due now.
+        if medications == ReminderScheduler.testIDs {
+            ReminderScheduler.stopTestAlarm()
+        } else {
+            await AppModel.shared.markTaken(medications.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+        }
         #endif
         return .result()
     }
