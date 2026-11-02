@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-02
+
+### Changed
+- Taken on a ringing alarm now silences it and opens the app, which asks "Taken?" before logging. On a locked phone a
+  hardware button press once ran Taken on 0.5.3 without the button being touched, so no button on the alarm logs a dose
+  by itself any more. Slide to stop and the side button still only silence the ring.
+- Diagnostics lists the last alarm buttons in one row.
+
 ## [0.5.3] - 2026-11-02
 
 ### Changed
@@ -278,7 +286,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/finnwasabi/pillot/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/finnwasabi/pillot/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/finnwasabi/pillot/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/finnwasabi/pillot/compare/v0.5.0...v0.5.1
