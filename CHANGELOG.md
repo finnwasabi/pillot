@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-02
+
+### Changed
+- A dose that is not taken now rings again every snooze length (5 to 15 minutes, 9 by default) instead of three rings
+  five minutes apart: for the first three hours after the dose time, around the deadline, and for the first three hours
+  after it, then hourly until the dose counts as missed. Four medications still fit five days in the alarm budget.
+- The alarm buttons follow the Clock app: sliding to stop is Taken and the button is Snooze, which silences only this ring
+  because the next one is already scheduled. On iOS 26.1 and later the side button presses the slide control, so it may
+  log Taken; Diagnostics shows the last buttons pressed so this can be checked on a phone. Alarms set by older versions
+  are replaced on the first launch.
+- The snooze length in Settings starts at 5 minutes (shorter rings would use up the alarm budget).
+
+### Added
+- Settings > Diagnostics has a test alarm that rings in a minute with the real buttons and changes no data, and lists the
+  last alarm buttons pressed.
+
+### Fixed
+- When iOS could not list the alarms, a reschedule added every planned alarm a second time. It now stops and reports the failure.
+
+### Removed
+- The snooze countdown alarm the Stop button scheduled, and the unused per-medication snooze setting in the planner.
+
 ## [0.5.0] - 2026-10-31
 
 ### Fixed
@@ -237,7 +259,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/finnwasabi/pillot/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/finnwasabi/pillot/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/finnwasabi/pillot/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/finnwasabi/pillot/compare/v0.3.6...v0.4.0

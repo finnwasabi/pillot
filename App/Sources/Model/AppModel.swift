@@ -81,9 +81,10 @@ final class AppModel {
         }
     }
 
-    /// Snooze length, like the iPhone Clock app: 9 minutes by default, 1 to 15.
-    static let snoozeRange = 1...15
-    var snoozeMinutes: Int = UserDefaults.standard.object(forKey: "snoozeMinutes") as? Int ?? 9 {
+    /// How often a dose that is not taken rings again, and the snooze button's label: 9 minutes by default, 5 to 15.
+    /// Shorter rings would use up the alarm budget.
+    static let snoozeRange = 5...15
+    var snoozeMinutes: Int = min(max(UserDefaults.standard.object(forKey: "snoozeMinutes") as? Int ?? 9, snoozeRange.lowerBound), snoozeRange.upperBound) {
         didSet {
             // Assign only when out of range: with @Observable, assigning inside didSet runs didSet again, and an
             // unconditional clamp here recursed forever (0.2.0 crashed on the first tap of the snooze stepper).
@@ -217,12 +218,14 @@ final class AppModel {
         await resync(cancelActiveFor: Set(targets))
     }
 
-    /// Stop or the side button on a ringing alarm: ring again after the snooze length. Medications already taken in the
-    /// meantime (for example on another alarm) are left out.
-    func snooze(_ ids: [UUID], now: Date = .now) async {
-        let due = ids.compactMap { id in medications.first { $0.id == id } }.filter { $0.planner.currentDose(now: now).dueAt <= now }
-        guard !due.isEmpty else { return }
-        await scheduler.snooze(due.map(\.id), names: AlertPlanner.names(due.map(\.name), language: language), snooze: TimeInterval(snoozeMinutes * 60))
+    /// The Snooze button on a ringing alarm: silences this ring, the next one is already scheduled.
+    func snooze(_ ids: [UUID]) {
+        scheduler.silence(ids)
+    }
+
+    /// The test alarm in Settings; `false` when it could not be scheduled.
+    func testAlarm() async -> Bool {
+        await scheduler.scheduleTest(snooze: TimeInterval(snoozeMinutes * 60))
     }
 
     func undo(_ id: UUID, now: Date = .now) async {
@@ -359,7 +362,7 @@ final class AppModel {
             let now = Date.now
             let alarmsAvailable = AlarmManager.shared.authorizationState == .authorized
             let alerts = AlertPlanner.alerts(
-                for: medications.map { MedicationReminders($0, now: now, language: language) },
+                for: medications.map { MedicationReminders($0, now: now, language: language, cadence: TimeInterval(snoozeMinutes * 60)) },
                 vibrateOnly: vibrateOnly,
                 alarmsAvailable: alarmsAvailable,
                 language: language

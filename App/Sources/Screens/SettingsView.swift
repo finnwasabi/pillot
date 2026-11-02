@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var pendingRestore: Backup?
     @State private var backupIssue: String?
     @State private var showsDiagnostics = false
+    @State private var testAlarmState: String?
 
     var body: some View {
         @Bindable var model = model
@@ -41,11 +42,11 @@ struct SettingsView: View {
                             label(L("Âm thanh", "Sound"))
                             NeoSegmented(options: [(false, L("Luôn kêu", "Always ring")), (true, L("Theo chế độ máy", "Follow phone"))], selection: $model.vibrateOnly)
                             InkDivider()
-                            NeoRow(title: L("Hoãn", "Snooze"), detail: L("mặc định 9 phút như Đồng hồ iPhone", "9 min by default, like the iPhone Clock")) {
+                            NeoRow(title: L("Hoãn", "Snooze"), detail: L("nhắc lại mỗi N phút tới khi uống, 5 đến 15, mặc định 9", "rings again every N min until taken, 5 to 15, 9 by default")) {
                                 NeoStepper(value: $model.snoozeMinutes, range: AppModel.snoozeRange, unit: L("phút", "min"))
                             }
-                            Callout(text: L("Khi báo thức kêu, bấm Dừng hoặc nút nguồn là hoãn, không tính là đã uống. Chỉ nút Đã uống (hoặc Bỏ qua lần này trong app) mới tắt hẳn. Chưa uống thì app nhắc lại 3 lần mỗi 5 phút, rồi mỗi giờ, rồi dồn dập trước hạn chót.",
-                                            "When an alarm rings, Stop or the side button snoozes and never counts as taken. Only Taken (or Skip this dose in the app) stops it for good. Until then the app repeats 3 times every 5 minutes, then hourly, then faster before the deadline."),
+                            Callout(text: L("Chưa uống thì app cứ kêu lại mỗi \(model.snoozeMinutes) phút, dồn dập quanh hạn chót, rồi thưa dần mỗi giờ. Trên báo thức, kéo để dừng (hoặc nút nguồn) là ghi Đã uống; nút Hoãn chỉ tắt lần kêu này, lần sau vẫn tới. Bỏ qua lần này thì làm trong app.",
+                                            "Until it is taken the app rings again every \(model.snoozeMinutes) min, faster around the deadline, then hourly. On the alarm, slide to stop (or the side button) logs Taken; Snooze only silences this ring and the next one still comes. Skip this dose in the app."),
                                     icon: "bell.and.waves.left.and.right.fill", fill: Palette.lavender)
                         }
                     }
@@ -205,6 +206,13 @@ struct SettingsView: View {
             NeoRow(title: L("Chạy nền gần nhất", "Last background run"), detail: model.lastBackgroundRefresh.map(when) ?? L("chưa bao giờ", "never")) { EmptyView() }
             if let failures = report?.result.failures, failures > 0 {
                 NeoRow(title: L("Hẹn lỗi", "Failed"), detail: "\(failures)") { EmptyView() }
+            }
+            NeoRow(title: L("Báo thức thử", "Test alarm"), detail: testAlarmState ?? L("kêu sau 1 phút, ghi lại nút bấm", "rings in a minute, logs the button")) {
+                Button(L("Hẹn thử", "Try")) { Task { testAlarmState = await model.testAlarm() ? L("đã hẹn, kêu lúc \(TimeFormatting.vn(.now.addingTimeInterval(60)))", "set, rings at \(TimeFormatting.vn(.now.addingTimeInterval(60)))") : L("không hẹn được", "could not be set") } }
+                    .buttonStyle(NeoButtonStyle(fill: Palette.surfaceOnFill, large: false))
+            }
+            ForEach(Array(AlarmLog.lines.enumerated()), id: \.offset) { index, line in
+                NeoRow(title: index == 0 ? L("Nút gần nhất trên báo thức", "Latest alarm button") : "", detail: line) { EmptyView() }
             }
             NeoRow(title: L("Dữ liệu cho widget", "Widget data"), detail: SharedStorage.container != nil ? L("có App Group", "App Group found") : L("không có App Group", "no App Group")) { EmptyView() }
         }
