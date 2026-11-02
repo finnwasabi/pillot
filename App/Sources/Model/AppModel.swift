@@ -218,8 +218,8 @@ final class AppModel {
         await resync(cancelActiveFor: Set(targets))
     }
 
-    /// The Snooze button on a ringing alarm: silences this ring, the next one is already scheduled.
-    func snooze(_ ids: [UUID]) {
+    /// Slide to stop or the side button on a ringing alarm: silences this ring, the next one is already scheduled.
+    func silence(_ ids: [UUID]) {
         scheduler.silence(ids)
     }
 
