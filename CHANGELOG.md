@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-02
+
+### Changed
+- On a ringing alarm, slide to stop and the side button now only silence this ring; the next reminder comes within the
+  snooze length, so the side button snoozes as in the Clock app. Only the Taken button logs the dose. In 0.5.1 and 0.5.2
+  slide to stop was Taken, and on a phone the side button runs the same action, so a press of the side button logged the
+  dose. Alarms set by older versions are replaced on the first launch.
+
+### Fixed
+- The test alarm in Settings could be cancelled right after it was set when the app rescheduled at the same moment, and
+  Taken on it did not stop the ringing.
+
 ## [0.5.2] - 2026-11-02
 
 ### Fixed
@@ -266,7 +278,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/finnwasabi/pillot/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/finnwasabi/pillot/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/finnwasabi/pillot/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/finnwasabi/pillot/compare/v0.4.1...v0.5.0
