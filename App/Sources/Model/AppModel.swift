@@ -270,6 +270,9 @@ final class AppModel {
         scheduler.silence(ids)
     }
 
+    /// Set when a reminder notification is tapped; RootView switches to Today and clears it.
+    var openToday = false
+
     /// "Taken?" asked after the Taken button on an alarm; RootView shows it.
     struct TakenQuestion: Identifiable {
         let id = UUID()
