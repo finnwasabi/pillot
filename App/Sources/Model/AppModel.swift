@@ -5,6 +5,7 @@ import Network
 import PillotCore
 import Observation
 import SwiftUI
+import UserNotifications
 import WidgetKit
 
 /// App state: loads and saves data and reschedules reminders after every change.
@@ -380,6 +381,22 @@ final class AppModel {
     // MARK: Background refresh
 
     nonisolated static let refreshTask = "io.github.finnwasabi.nersdaily.refresh"
+
+    /// Notification permission, for Diagnostics. Asked once at onboarding before 0.5.6, and never again after a dismissed prompt.
+    private(set) var notificationStatus: UNAuthorizationStatus?
+
+    /// On every launch: asks for notifications when never asked, so a skipped prompt gets a second chance. Not while
+    /// onboarding is due (it asks for alarms and notifications itself) or in screenshot launches.
+    func checkNotifications() async {
+        let center = UNUserNotificationCenter.current()
+        var status = await center.notificationSettings().authorizationStatus
+        if status == .notDetermined, AlarmManager.shared.authorizationState != .notDetermined,
+           UserDefaults.standard.string(forKey: "screen") == nil {
+            _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+            status = await center.notificationSettings().authorizationStatus
+        }
+        notificationStatus = status
+    }
 
     /// When iOS last woke the app in the background to top up the reminders.
     private(set) var lastBackgroundRefresh: Date? = UserDefaults.standard.object(forKey: "lastBackgroundRefresh") as? Date
