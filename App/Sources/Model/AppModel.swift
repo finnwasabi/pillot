@@ -108,6 +108,26 @@ final class AppModel {
     }
     @ObservationIgnored private var snoozeResync: Task<Void, Never>?
 
+    /// A quiet notification this many minutes before each dose time, for when the phone is at hand. 0 turns it off.
+    static let headsUpRange = 0...30
+    var headsUpMinutes: Int = min(max(UserDefaults.standard.object(forKey: "headsUpMinutes") as? Int ?? 10, headsUpRange.lowerBound), headsUpRange.upperBound) {
+        didSet {
+            // Same guard as `snoozeMinutes`: assign inside didSet only when out of range.
+            guard Self.headsUpRange.contains(headsUpMinutes) else {
+                headsUpMinutes = min(max(headsUpMinutes, Self.headsUpRange.lowerBound), Self.headsUpRange.upperBound)
+                return
+            }
+            guard headsUpMinutes != oldValue else { return }
+            UserDefaults.standard.set(headsUpMinutes, forKey: "headsUpMinutes")
+            snoozeResync?.cancel()
+            snoozeResync = Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled else { return }
+                await resync()
+            }
+        }
+    }
+
     // MARK: Shared tracking
 
     private(set) var connection: SyncConnection? = ConnectionKeychain.load().flatMap(SyncConnection.init(code:))
@@ -315,7 +335,7 @@ final class AppModel {
     func makeBackup(now: Date = .now) -> Backup {
         Backup(createdAt: now, medications: medications, preferences: [
             "userName": userName, "partnerName": partnerName, "language": language.rawValue, "theme": theme.rawValue,
-            "vibrateOnly": String(vibrateOnly), "snoozeMinutes": String(snoozeMinutes),
+            "vibrateOnly": String(vibrateOnly), "snoozeMinutes": String(snoozeMinutes), "headsUpMinutes": String(headsUpMinutes),
         ])
     }
 
@@ -334,6 +354,7 @@ final class AppModel {
         if let value = p["theme"].flatMap(AppTheme.init(rawValue:)) { theme = value }
         if let value = p["vibrateOnly"].flatMap(Bool.init) { vibrateOnly = value }
         if let value = p["snoozeMinutes"].flatMap(Int.init) { snoozeMinutes = value }
+        if let value = p["headsUpMinutes"].flatMap(Int.init) { headsUpMinutes = value }
         persist()
         // The language last: it rebuilds every screen.
         if let value = p["language"].flatMap(Language.init(rawValue:)), value != language { language = value }
@@ -453,7 +474,8 @@ final class AppModel {
                 for: medications.map { MedicationReminders($0, now: now, language: language, cadence: TimeInterval(snoozeMinutes * 60)) },
                 vibrateOnly: vibrateOnly,
                 alarmsAvailable: alarmsAvailable,
-                language: language
+                language: language,
+                headsUp: TimeInterval(headsUpMinutes * 60)
             )
             // Opening the app with nothing due in between plans the same alerts: skip reading back every alarm and notification.
             if cancel.isEmpty, let lastApplied, lastApplied.alerts == alerts, lastApplied.snoozeMinutes == snoozeMinutes, lastApplied.language == language,

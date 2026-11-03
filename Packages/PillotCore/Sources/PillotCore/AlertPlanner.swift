@@ -12,6 +12,8 @@ public struct PlannedAlert: Equatable, Sendable {
     public var medicationIDs: [UUID]
     /// Their names, for the lock screen countdown.
     public var names: String
+    /// A notification without sound: the heads-up before the dose time.
+    public var quiet = false
 }
 
 /// One medication's reminders, the input for `AlertPlanner`.
@@ -53,18 +55,37 @@ public enum AlertPlanner {
     /// at 21:00 ring once and one "Taken" marks both.
     /// `vibrateOnly`: reminders are plain notifications, but from the deadline on they are always ringing alarms.
     /// `alarmsAvailable` false (no AlarmKit permission): everything becomes a notification so reminders still happen.
+    /// `headsUp`: a quiet notification this long before each dose time, for someone holding the phone; 0 means none.
     /// Only the earliest alerts within the limits are kept; the app refills on every launch and every "Taken".
     public static func alerts(
-        for medications: [MedicationReminders], vibrateOnly: Bool, alarmsAvailable: Bool = true, language: Language = .vi
+        for medications: [MedicationReminders], vibrateOnly: Bool, alarmsAvailable: Bool = true, language: Language = .vi,
+        headsUp: TimeInterval = 0
     ) -> [PlannedAlert] {
         var byDate: [Date: [(medication: MedicationReminders, event: ReminderEvent)]] = [:]
+        var headsUpByDate: [Date: [MedicationReminders]] = [:]
         for medication in medications {
-            for event in medication.events { byDate[event.date, default: []].append((medication, event)) }
+            for event in medication.events {
+                byDate[event.date, default: []].append((medication, event))
+                // The first ring of a dose. Its kind is not enough: with the default gap the dose time is also the deadline.
+                if headsUp > 0, event.date == event.dueAt {
+                    headsUpByDate[event.date.addingTimeInterval(-headsUp), default: []].append(medication)
+                }
+            }
         }
         var notifications = 0, alarms = 0
         var result: [PlannedAlert] = []
-        for date in byDate.keys.sorted() {
-            let group = byDate[date]!
+        for date in Set(byDate.keys).union(headsUpByDate.keys).sorted() {
+            if let soon = headsUpByDate[date], notifications < notificationLimit {
+                notifications += 1
+                let names = names(soon.map(\.name), language: language)
+                let minutes = Int(headsUp / 60)
+                result.append(PlannedAlert(
+                    date: date, usesAlarm: false,
+                    title: language == .en ? "\(names) in \(minutes) min" : "Còn \(minutes) phút nữa tới giờ uống \(names)",
+                    body: language == .en ? "Taking it a little early is fine." : "Uống sớm một chút cũng được.",
+                    medicationIDs: soon.map(\.id), names: names, quiet: true))
+            }
+            guard let group = byDate[date] else { continue }
             let event = group.map(\.event).max { priority($0.kind) < priority($1.kind) }!
             let usesAlarm = alarmsAvailable && (!vibrateOnly || group.contains { $0.event.requiresSound })
             if usesAlarm {
