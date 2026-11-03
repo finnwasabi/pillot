@@ -57,6 +57,27 @@ struct RootView: View {
         } message: { _ in
             Text(L("Chưa uống thì lát nữa báo thức kêu lại.", "If not, the alarm rings again soon."))
         }
+        // Asked from a Today card, which the timeline rebuilds every minute and a tab change removes.
+        .alert(L("Về lại giờ chính?", "Back to the usual time?"),
+               isPresented: Binding(get: { model.realignQuestion != nil }, set: { if !$0 { model.realignQuestion = nil } }),
+               presenting: model.realignQuestion) { question in
+            let main = TimeFormatting.clockTime(question.preview.dueAt, in: VietnamClock.timeZone)
+            Button(L("Về lại \(main)", "Move to \(main)"), role: question.preview.exceedsMaxInterval ? .destructive : nil) {
+                model.update(question.medicationID) { $0.planner.resetToMainTime(now: .now) }
+            }
+            Button(L("Giữ như cũ", "Keep it"), role: .cancel) {}
+        } message: { question in
+            let main = TimeFormatting.clockTime(question.preview.dueAt, in: VietnamClock.timeZone)
+            let gap = TodayText.duration(model.medication(question.medicationID)?.settings.maxInterval ?? 0)
+            Text(question.preview.exceedsMaxInterval
+                 ? L("Lần tới sẽ cách lần trước quá \(gap). Xem tờ hướng dẫn thuốc trước khi giãn khoảng cách.",
+                     "The next dose will be more than \(gap) after the last one. Check the leaflet before stretching the gap.")
+                 : L("Lần tới sẽ về lại \(main) giờ VN.", "The next dose moves back to \(main) VN time."))
+        }
+        // Opened from History.
+        .sheet(item: Binding(get: { model.timeEdit }, set: { model.timeEdit = $0 })) { edit in
+            EditTakenTimeSheet(medicationID: edit.medicationID, record: edit.record)
+        }
     }
 
     private var tabBar: some View {

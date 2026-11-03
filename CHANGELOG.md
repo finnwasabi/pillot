@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-03
+
+### Changed
+- Opening the app no longer reads back every alarm and notification when the planned reminders are the same as last
+  time: with a year of history a pass drops from about 26 to 44 ms to about 5 to 9 ms in the Simulator. Several
+  changes made at once (a restore, the editor) now run as one rescheduling pass.
+- Today and History work out each medication's history once per minute or data change instead of on every redraw. A
+  tap, a filter or a month change in History went from about 7 ms to under 0.1 ms with a year of history.
+- "Back to the usual time?" on Today and the taken time editor in History now open from the root of the app, like the
+  medication editor, so a timeline redraw or a tab change cannot tear them down.
+
 ## [0.5.4] - 2026-11-02
 
 ### Changed
@@ -286,7 +297,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/finnwasabi/pillot/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/finnwasabi/pillot/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/finnwasabi/pillot/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/finnwasabi/pillot/compare/v0.5.1...v0.5.2
