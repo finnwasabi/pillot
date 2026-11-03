@@ -14,7 +14,9 @@ import WidgetKit
 final class AppModel {
     static let shared = AppModel()
 
-    private(set) var medications: [Medication]
+    private(set) var medications: [Medication] {
+        didSet { summaryCache = nil }
+    }
     /// Load, save or scheduling errors. Shown on the Today screen, never swallowed.
     var issue: String? { scheduleIssue ?? dataIssue }
     private var dataIssue: String?
@@ -161,6 +163,30 @@ final class AppModel {
 
     func medication(_ id: UUID) -> Medication? { medications.first { $0.id == id } }
 
+    @ObservationIgnored private var summaryCache: (minute: Int, summaries: [UUID: PlannerSummary], derived: [String: Any])?
+
+    /// Every medication's summary, walked once per data change or minute and shared by Today and History, so a redraw
+    /// (a tap, a filter, a dialog) does not walk every history again.
+    func summaries(now: Date = .now) -> [UUID: PlannerSummary] {
+        // Read before the cache check so a view still observes the medications on a cache hit.
+        let medications = medications
+        let minute = Int(now.timeIntervalSinceReferenceDate / 60)
+        if let summaryCache, summaryCache.minute == minute { return summaryCache.summaries }
+        let summaries = Dictionary(uniqueKeysWithValues: medications.map { ($0.id, $0.planner.summary(now: now)) })
+        summaryCache = (minute, summaries, [:])
+        return summaries
+    }
+
+    /// Something a screen works out from `summaries` (calendar statuses, a sorted history), kept as long as they are.
+    /// `key` names it uniquely, including any filter it depends on.
+    func derived<T>(_ key: String, now: Date = .now, _ make: () -> T) -> T {
+        _ = summaries(now: now)
+        if let value = summaryCache?.derived[key] as? T { return value }
+        let value = make()
+        summaryCache?.derived[key] = value
+        return value
+    }
+
     /// The next swatch, so new medications do not all look the same.
     var nextColor: Int {
         (0..<Swatch.colors.count).min { a, b in
@@ -231,6 +257,22 @@ final class AppModel {
         let names: String
     }
     var takenQuestion: TakenQuestion?
+
+    /// "Back to the usual time?" from a Today card. RootView shows it, like `takenQuestion`.
+    struct RealignQuestion: Identifiable {
+        let id = UUID()
+        let medicationID: UUID
+        let preview: ResetPreview
+    }
+    var realignQuestion: RealignQuestion?
+
+    /// A taken time being edited from History. RootView shows the sheet, so a tab change does not tear it down.
+    struct TimeEdit: Identifiable {
+        let id = UUID()
+        let medicationID: UUID
+        let record: DoseRecord
+    }
+    var timeEdit: TimeEdit?
 
     /// The Taken button on an alarm: silence the ring now, log only once the person confirms in the app.
     func askTaken(_ medications: String) {
@@ -369,9 +411,11 @@ final class AppModel {
     private var syncing = false
     private var syncAgain = false
     private var cancelPending: Set<UUID> = []
+    /// What the last pass handed to the scheduler without a failure. The same plan again means nothing to change.
+    @ObservationIgnored private var lastApplied: (alerts: [PlannedAlert], snoozeMinutes: Int, language: Language, alarmsAvailable: Bool)?
 
-    /// Cancels and reschedules all alarms and notifications. Overlapping calls coalesce into one more pass after the running one.
-    /// `cancelActiveFor`: also stop alarms of these medications that are ringing or snoozed (after a dose is taken).
+    /// Reschedules all alarms and notifications, changing only what differs. Overlapping calls coalesce into one more pass
+    /// after the running one. `cancelActiveFor`: also stop alarms of these medications that are ringing or snoozed (after a dose is taken).
     func resync(cancelActiveFor ids: Set<UUID> = []) async {
         cancelPending.formUnion(ids)
         guard !syncing else {
@@ -379,11 +423,14 @@ final class AppModel {
             return
         }
         syncing = true
+        // One action often starts several passes at once (restore, the editor); let them queue up and run as this one.
+        await Task.yield()
         repeat {
             syncAgain = false
             let cancel = cancelPending
             cancelPending = []
             let now = Date.now
+            let started = ContinuousClock.now
             let alarmsAvailable = AlarmManager.shared.authorizationState == .authorized
             let alerts = AlertPlanner.alerts(
                 for: medications.map { MedicationReminders($0, now: now, language: language, cadence: TimeInterval(snoozeMinutes * 60)) },
@@ -391,9 +438,19 @@ final class AppModel {
                 alarmsAvailable: alarmsAvailable,
                 language: language
             )
-            let started = ContinuousClock.now
+            // Opening the app with nothing due in between plans the same alerts: skip reading back every alarm and notification.
+            if cancel.isEmpty, let lastApplied, lastApplied.alerts == alerts, lastApplied.snoozeMinutes == snoozeMinutes, lastApplied.language == language,
+               lastApplied.alarmsAvailable == alarmsAvailable,
+               var report = scheduleReport {
+                report.result.changed = 0
+                report.at = now
+                report.duration = ContinuousClock.now - started
+                scheduleReport = report
+                continue
+            }
             let result = await scheduler.apply(alerts, cancelActiveFor: cancel, snooze: TimeInterval(snoozeMinutes * 60), language: language)
             scheduleReport = ScheduleReport(result: result, at: now, duration: ContinuousClock.now - started)
+            lastApplied = result.failures == 0 ? (alerts, snoozeMinutes, language, alarmsAvailable) : nil
             let failures = result.failures
             // Screenshot launches (`-screen`) run in the Simulator, which always denies alarms.
             if medications.isEmpty || UserDefaults.standard.string(forKey: "screen") != nil {
