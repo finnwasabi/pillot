@@ -295,6 +295,10 @@ enum AlarmLog {
 
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        // Tapping the notification itself opens the app on Today, where the dose is.
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            await MainActor.run { AppModel.shared.openToday = true }
+        }
         if response.actionIdentifier == ReminderScheduler.takenAction {
             let ids = (response.notification.request.content.userInfo[ReminderScheduler.medicationsKey] as? [String] ?? []).compactMap(UUID.init(uuidString:))
             await AppModel.shared.markTaken(ids)

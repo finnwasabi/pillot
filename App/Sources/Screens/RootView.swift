@@ -45,6 +45,12 @@ struct RootView: View {
         .sheet(item: $editor) { MedicationEditor(medication: $0.medication) }
         .environment(\.editMedication, EditMedicationAction { editor = EditorRequest(medication: $0) })
         .onAppear { if let selectedTab { tab = selectedTab } }
+        // `initial`: a tap that launched the app arrives before this view exists.
+        .onChange(of: model.openToday, initial: true) {
+            guard model.openToday else { return }
+            tab = 0
+            model.openToday = false
+        }
         // Here at the root, not on a card: the question must survive tab changes (see the Add medication fix in 0.3.2).
         .alert(L("Đã uống \(model.takenQuestion?.names ?? "")?", "Taken \(model.takenQuestion?.names ?? "")?"),
                isPresented: Binding(get: { model.takenQuestion != nil }, set: { if !$0 { model.takenQuestion = nil } }),

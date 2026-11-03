@@ -79,10 +79,12 @@ public enum AlertPlanner {
                 notifications += 1
                 let names = names(soon.map(\.name), language: language)
                 let minutes = Int(headsUp / 60)
+                let at = TimeFormatting.vietnamTime(date.addingTimeInterval(headsUp), language: language)
+                // A short title on one line; what and when go in the body, which wraps.
                 result.append(PlannedAlert(
                     date: date, usesAlarm: false,
-                    title: language == .en ? "\(names) in \(minutes) min" : "Còn \(minutes) phút nữa tới giờ uống \(names)",
-                    body: language == .en ? "Taking it a little early is fine." : "Uống sớm một chút cũng được.",
+                    title: language == .en ? "\(minutes) min to go" : "Còn \(minutes) phút nữa",
+                    body: language == .en ? "\(names), take at \(at).\nTaking it a little early is fine." : "\(names), uống lúc \(at).\nUống sớm một chút cũng được.",
                     medicationIDs: soon.map(\.id), names: names, quiet: true))
             }
             guard let group = byDate[date] else { continue }

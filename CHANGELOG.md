@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-03
+
+### Changed
+- The heads-up notification has a one-line title ("10 min to go") and puts the medication and its time in the body.
+- Tapping a reminder notification opens the app on Today.
+
 ## [0.6.0] - 2026-11-03
 
 ### Added
@@ -311,7 +317,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/finnwasabi/pillot/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/finnwasabi/pillot/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/finnwasabi/pillot/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/finnwasabi/pillot/compare/v0.5.4...v0.5.5
