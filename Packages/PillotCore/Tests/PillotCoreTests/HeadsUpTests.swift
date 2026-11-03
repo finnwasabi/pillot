@@ -17,7 +17,7 @@ import Testing
         let med = Medication(name: "Iron", settings: planner.settings, history: planner.history)
         let quiet = alerts(med, headsUp: 10 * minute).filter(\.quiet)
         #expect(quiet.first?.date == vn(2026, 10, 28, 20, 50))
-        #expect(quiet.allSatisfy { !$0.usesAlarm && $0.title == "Còn 10 phút nữa tới giờ uống Iron" })
+        #expect(quiet.allSatisfy { !$0.usesAlarm && $0.title == "Còn 10 phút nữa" && $0.body.hasPrefix("Iron, uống lúc 21:00") })
         // One per day for a daily dose, never one per repeat ring.
         #expect(Set(quiet.map { VietnamClock.startOfDay($0.date) }).count == quiet.count)
         #expect(quiet.allSatisfy { $0.date.timeIntervalSince(vn(2026, 10, 28, 20, 50)).truncatingRemainder(dividingBy: VietnamClock.day) == 0 })
