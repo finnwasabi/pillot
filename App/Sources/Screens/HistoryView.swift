@@ -7,7 +7,6 @@ struct HistoryView: View {
     @State private var monthOffset = 0
     /// `nil` shows every medication.
     @State private var filter: UUID?
-    @State private var editing: Entry?
     /// A day tapped on the calendar: the list below shows only that day. `nil` shows the latest doses.
     @State private var selectedDay: Date?
     /// How many of the latest doses the list shows; "Show more" adds a page.
@@ -29,8 +28,15 @@ struct HistoryView: View {
     var body: some View {
         let now = Date.now
         let shown = model.medications.filter { filter == nil || $0.id == filter }
-        // One walk over each history per redraw.
-        let summaries = shown.map { ($0, $0.planner.summary(now: now)) }
+        // Walked once per data change or minute, not on every tap or filter change.
+        let all = model.summaries(now: now)
+        let summaries = shown.map { ($0, all[$0.id]!) }
+        let key = filter?.uuidString ?? "all"
+        let days = model.derived("days \(key)", now: now) { mergedDayStatuses(summaries.map { $0.1.dayStatuses() }) }
+        let entries = model.derived("entries \(key)", now: now) {
+            summaries.flatMap { med, summary in summary.timeline.map { Entry(medication: med, record: $0) } }
+                .sorted { moment($0.record) > moment($1.record) }
+        }
         let month = monthStart(now: now)
         Group {
             ScrollView {
@@ -40,19 +46,15 @@ struct HistoryView: View {
                         .foregroundStyle(Palette.text)
                         .padding(.top, 12)
                     if model.medications.count > 1 { filterBar }
-                    calendarCard(days: mergedDayStatuses(summaries.map { $0.1.dayStatuses() }), month: month, now: now)
+                    calendarCard(days: days, month: month, now: now)
                     // Under the calendar: the counts follow the month it shows.
                     summaryCard(summaries.flatMap(\.1.timeline), month: month)
-                    entriesCard(summaries.flatMap { med, summary in summary.timeline.map { Entry(medication: med, record: $0) } }
-                        .sorted { moment($0.record) > moment($1.record) })
+                    entriesCard(entries)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
             }
             .screenBackground()
-            .sheet(item: $editing) { entry in
-                EditTakenTimeSheet(medicationID: entry.medication.id, record: entry.record)
-            }
             .onChange(of: model.medications.map(\.id)) { _, ids in
                 if let filter, !ids.contains(filter) { self.filter = nil }
             }
@@ -273,7 +275,7 @@ struct HistoryView: View {
                 .padding(.vertical, 10)
                 .contentShape(Rectangle())
                 if record.takenAt != nil {
-                    Button { editing = entry } label: { row }
+                    Button { model.timeEdit = .init(medicationID: entry.medication.id, record: entry.record) } label: { row }
                         .buttonStyle(.plain)
                         .accessibilityHint(L("Sửa giờ uống", "Edit time"))
                 } else {

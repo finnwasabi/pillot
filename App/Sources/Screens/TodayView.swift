@@ -4,12 +4,6 @@ import SwiftUI
 struct TodayView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.editMedication) private var editMedication
-    @State private var confirmRealign: RealignRequest?
-
-    private struct RealignRequest {
-        let id: UUID
-        let preview: ResetPreview
-    }
     @State private var tapped = 0
     /// The medication whose "skip this dose" waits for confirmation.
     @State private var confirmSkip: Medication?
@@ -26,8 +20,8 @@ struct TodayView: View {
             // otherwise a dose taken a moment ago lies after `now` and is ignored.
             TimelineView(.everyMinute) { _ in
                 let now = Date.now
-                // One walk over each history per redraw; every card, the sort and the week strip read from these.
-                let summaries = Dictionary(uniqueKeysWithValues: model.medications.map { ($0.id, $0.planner.summary(now: now)) })
+                // Every card, the sort and the week strip read from these, walked once per data change or minute.
+                let summaries = model.summaries(now: now)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         header(now: now)
@@ -50,22 +44,6 @@ struct TodayView: View {
                 }
             }
             .screenBackground()
-            // Here and not on the card's button: a card is rebuilt every minute by the timeline and moves when the cards reorder.
-            .alert(L("Về lại giờ chính?", "Back to the usual time?"), isPresented: Binding(get: { confirmRealign != nil }, set: { if !$0 { confirmRealign = nil } }),
-                   presenting: confirmRealign) { request in
-                let main = TimeFormatting.clockTime(request.preview.dueAt, in: VietnamClock.timeZone)
-                Button(L("Về lại \(main)", "Move to \(main)"), role: request.preview.exceedsMaxInterval ? .destructive : nil) {
-                    model.update(request.id) { $0.planner.resetToMainTime(now: .now) }
-                }
-                Button(L("Giữ như cũ", "Keep it"), role: .cancel) {}
-            } message: { request in
-                let main = TimeFormatting.clockTime(request.preview.dueAt, in: VietnamClock.timeZone)
-                let gap = TodayText.duration(model.medication(request.id)?.settings.maxInterval ?? 0)
-                Text(request.preview.exceedsMaxInterval
-                     ? L("Lần tới sẽ cách lần trước quá \(gap). Xem tờ hướng dẫn thuốc trước khi giãn khoảng cách.",
-                         "The next dose will be more than \(gap) after the last one. Check the leaflet before stretching the gap.")
-                     : L("Lần tới sẽ về lại \(main) giờ VN.", "The next dose moves back to \(main) VN time."))
-            }
             .sensoryFeedback(.success, trigger: tapped)
             .overlay { Confetti(trigger: tapped) }
         }
@@ -346,7 +324,7 @@ struct TodayView: View {
     private func realignButton(_ medication: Medication, _ summary: PlannerSummary) -> some View {
         if summary.dose.dueAt < summary.dose.slotAt.addingTimeInterval(-60), let preview = summary.resetPreview {
             let main = TimeFormatting.clockTime(preview.dueAt, in: VietnamClock.timeZone)
-            Button(L("Về lại \(main)", "Back to \(main)")) { confirmRealign = RealignRequest(id: medication.id, preview: preview) }
+            Button(L("Về lại \(main)", "Back to \(main)")) { model.realignQuestion = .init(medicationID: medication.id, preview: preview) }
                 .buttonStyle(ChipButtonStyle(fill: Palette.surfaceOnFill))
         }
     }
@@ -379,7 +357,7 @@ struct TodayView: View {
     private func weekCard(now: Date, summaries: [UUID: PlannerSummary]) -> some View {
         let calendar = VietnamClock.calendar
         let today = calendar.startOfDay(for: now)
-        let statuses = mergedDayStatuses(model.medications.map { summaries[$0.id]!.dayStatuses() })
+        let statuses = model.derived("week", now: now) { mergedDayStatuses(model.medications.map { summaries[$0.id]!.dayStatuses() }) }
         // The only past day that can lack a record is a pending dose that is due or overdue (still in its late
         // window). Any other gap is before the user started, so it shows "no data", not late.
         var dueDays: [Date: DoseStatus] = [:]
