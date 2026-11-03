@@ -2,9 +2,11 @@ import AlarmKit
 import PillotCore
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
     @State private var confirmDisconnect = false
     @State private var code = ""
     @State private var badCode = false
@@ -197,6 +199,12 @@ struct SettingsView: View {
         let when = { (date: Date) in "\(TodayText.dayTitle(date)), \(TimeFormatting.vn(date))" }
         VStack(alignment: .leading, spacing: 10) {
             NeoRow(title: L("Quyền báo thức", "Alarm permission"), detail: AlarmManager.shared.authorizationState == .authorized ? L("có", "yes") : L("chưa", "no")) { EmptyView() }
+            NeoRow(title: L("Quyền thông báo", "Notification permission"), detail: notificationText) {
+                if model.notificationStatus == .denied {
+                    Button(L("Mở Cài đặt", "Open Settings")) { openURL(URL(string: UIApplication.openSettingsURLString)!) }
+                        .buttonStyle(NeoButtonStyle(fill: Palette.surfaceOnFill, large: false))
+                }
+            }
             NeoRow(title: L("Báo thức đang hẹn", "Alarms set"), detail: report.map { "\($0.result.alarms)" } ?? "-") { EmptyView() }
             NeoRow(title: L("Thông báo đang hẹn", "Notifications set"), detail: report.map { "\($0.result.notifications)" } ?? "-") { EmptyView() }
             NeoRow(title: L("Nhắc xa nhất", "Last reminder set"), detail: report?.result.lastAlert.map(when) ?? "-") { EmptyView() }
@@ -223,6 +231,15 @@ struct SettingsView: View {
                 NeoRow(title: L("Nút gần nhất trên báo thức", "Latest alarm buttons"), detail: AlarmLog.lines.joined(separator: "\n")) { EmptyView() }
             }
             NeoRow(title: L("Dữ liệu cho widget", "Widget data"), detail: SharedStorage.container != nil ? L("có App Group", "App Group found") : L("không có App Group", "no App Group")) { EmptyView() }
+        }
+    }
+
+    private var notificationText: String {
+        switch model.notificationStatus {
+        case .authorized, .provisional, .ephemeral: L("có", "yes")
+        case .denied: L("bị từ chối, chỉ báo thức còn kêu", "denied, only alarms ring")
+        case .notDetermined: L("chưa hỏi", "not asked")
+        default: "-"
         }
     }
 
