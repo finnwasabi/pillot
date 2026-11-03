@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-11-03
+
+### Fixed
+- Notification permission was asked only once, on the first screen, so a dismissed prompt meant no notifications for
+  good. The app now asks on launch while the permission was never decided, and Diagnostics shows it, with a button to
+  Settings when it was denied.
+
 ## [0.5.5] - 2026-11-03
 
 ### Changed
@@ -297,7 +304,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/finnwasabi/pillot/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/finnwasabi/pillot/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/finnwasabi/pillot/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/finnwasabi/pillot/compare/v0.5.2...v0.5.3
