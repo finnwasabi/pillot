@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-03
+
+### Added
+- Heads-up: a notification without sound some minutes before each dose time, for when the phone is at hand. 10 minutes
+  by default, 0 to 30 in Settings, 0 turns it off. Taken on it logs the dose early, which is allowed. It needs the
+  notification permission and shares the 64 pending notifications with the other reminders.
+
 ## [0.5.6] - 2026-11-03
 
 ### Fixed
@@ -304,7 +311,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/finnwasabi/pillot/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/finnwasabi/pillot/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/finnwasabi/pillot/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/finnwasabi/pillot/compare/v0.5.3...v0.5.4

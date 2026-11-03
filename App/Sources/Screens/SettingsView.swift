@@ -47,6 +47,10 @@ struct SettingsView: View {
                             NeoRow(title: L("Hoãn", "Snooze"), detail: L("nhắc lại mỗi N phút tới khi uống, 5 đến 15, mặc định 9", "rings again every N min until taken, 5 to 15, 9 by default")) {
                                 NeoStepper(value: $model.snoozeMinutes, range: AppModel.snoozeRange, unit: L("phút", "min"))
                             }
+                            InkDivider()
+                            NeoRow(title: L("Báo trước", "Heads-up"), detail: L("thông báo không tiếng trước giờ uống, 0 là tắt, mặc định 10", "a silent notification before the dose time, 0 turns it off, 10 by default")) {
+                                NeoStepper(value: $model.headsUpMinutes, range: AppModel.headsUpRange, unit: L("phút", "min"))
+                            }
                             Callout(text: L("Chưa uống thì app cứ kêu lại mỗi \(model.snoozeMinutes) phút, dồn dập quanh hạn chót, rồi thưa dần mỗi giờ. Trên báo thức, kéo để dừng hoặc bấm nút nguồn chỉ tắt lần kêu này, lát sau vẫn kêu lại. Bấm nút Đã uống mới ghi. Bỏ qua lần này thì làm trong app.",
                                             "Until it is taken the app rings again every \(model.snoozeMinutes) min, faster around the deadline, then hourly. On the alarm, sliding to stop or pressing the side button only silences this ring and it comes back soon. Only the Taken button logs the dose. Skip this dose in the app."),
                                     icon: "bell.and.waves.left.and.right.fill", fill: Palette.lavender)

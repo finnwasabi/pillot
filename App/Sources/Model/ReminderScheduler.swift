@@ -130,7 +130,7 @@ nonisolated struct ReminderScheduler: Sendable {
             let content = UNMutableNotificationContent()
             content.title = alert.title
             content.body = alert.body
-            content.sound = .default
+            content.sound = alert.quiet ? nil : .default
             content.categoryIdentifier = Self.doseCategory
             content.userInfo = [Self.medicationsKey: alert.medicationIDs.map(\.uuidString)]
             // Seconds from now: the absolute time is in the key, so a kept request still fires when planned.
