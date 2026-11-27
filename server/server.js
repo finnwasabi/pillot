@@ -16,7 +16,9 @@ const DOSES_PER_DAY = [1, 2, 3, 4, 6];
 const MESSAGE_LIMIT = 300;
 const MEDICATION_LIMIT = 30;
 const TELEGRAM_TEXT_LIMIT = 4096;
-const REPORT_HEADING = "☀️ <b>Good morning!</b> Here's today's check-in.";
+const reportDate = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Ho_Chi_Minh',
+});
 const nameSegments = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 /// Same as the app's late tolerance: a dose this soon after the deadline is still on time.
 const NUDGE_AFTER_MS = 15 * 60 * 1000;
@@ -42,6 +44,15 @@ export function vnDay(iso) {
 export function vnDateKey(ms) {
   const d = new Date(ms + VN_OFFSET_MS);
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+function reportHeading(now) {
+  const vnNow = new Date(now + VN_OFFSET_MS);
+  return [
+    '☀️ <b>Pillot</b>',
+    '<b>Daily report · Medication check-in</b>',
+    `${reportDate.format(now)} · ${pad(vnNow.getUTCHours())}:${pad(vnNow.getUTCMinutes())} ICT`,
+  ].join('\n');
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -217,7 +228,7 @@ function statusPages(snapshot, now) {
   const [title, ...blocks] = statusParts(snapshot, now);
   if (!blocks.length) return [title];
   const footer = blocks.pop();
-  const fixedLength = title.length + footer.length + REPORT_HEADING.length + 6;
+  const fixedLength = title.length + footer.length + reportHeading(now).length + 6;
   return splitByLength(blocks, '\n\n', TELEGRAM_TEXT_LIMIT - fixedLength)
     .map((page) => [title, page, footer].join('\n\n'));
 }
@@ -267,7 +278,7 @@ export function changeText(previousSnapshot, nextSnapshot) {
 }
 
 export const HELP = [
-  "💊 <b>Pillot bot</b>",
+  "💊 <b>Pillot</b>",
   'I keep you in the loop on the meds in the app: taken, late or missed, plus a check-in every morning at 09:00 Vietnam time.',
   '',
   '/check · how things stand right now',
@@ -485,7 +496,7 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
     sendingReport = true;
     try {
       const { text, reply_markup } = statusView(0, now);
-      await say(`${REPORT_HEADING}\n\n${text}`, { reply_markup });
+      await say(`${reportHeading(now)}\n\n${text}`, { reply_markup });
       store.set({ lastReportDay: today });
     } finally {
       sendingReport = false;
@@ -522,14 +533,21 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
   const setProfile = () => Promise.all([
     call('setMyName', { name: 'Pillot' }),
     call('setMyCommands', { commands: [
-      { command: 'check', description: 'See how the meds are going right now' },
-      { command: 'msg', description: "Leave a note on the app's Today screen" },
-      { command: 'clearmsg', description: 'Remove the note' },
-      { command: 'link', description: 'Get the code that connects the app' },
-      { command: 'help', description: 'What I can do' },
+      { command: 'check', description: 'View current medication status' },
+      { command: 'msg', description: 'View or leave a note in the app' },
+      { command: 'clearmsg', description: 'Clear the app note' },
+      { command: 'link', description: 'Get the private app connection code' },
+      { command: 'help', description: 'Show available commands' },
     ] }),
-    call('setMyShortDescription', { short_description: "Med check-ins from Pillot 💊 Taken, late, skipped or missed, plus a morning summary." }),
-    call('setMyDescription', { description: "Hi! 👋 I'm the private companion bot for Pillot, a medication reminder that runs on Vietnam time.\n\nI tell you when a dose is taken, late, skipped or missed, nudge you when a deadline passes with no dose reported, warn when pills run low, and send a check-in every morning at 09:00 Vietnam time. You can also leave a little note that shows up in the app.\n\nI only talk to one chat, so your data stays between the two of you." }),
+    call('setMyShortDescription', { short_description: 'Pillot · Medication check-ins, dose alerts and app notes.' }),
+    call('setMyDescription', { description: [
+      'Pillot',
+      '',
+      'Follow shared medication updates, check reported doses and low stock, and leave a note in the Pillot app.',
+      '',
+      'Daily report · 09:00 Vietnam time',
+      'Commands · /help',
+    ].join('\n') }),
   ]);
 
   return { say, handle, handleCallback, poll, dailyReport, checkDeadlines, setProfile };

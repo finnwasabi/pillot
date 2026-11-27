@@ -253,7 +253,7 @@ test('the 09:00 report is sent once a day', async () => {
   await bot.dailyReport(Date.parse('2026-10-28T02:00:00Z')); // 09:00 Vietnam time
   await bot.dailyReport(Date.parse('2026-10-28T02:01:00Z'));
   assert.equal(calls.length, 1);
-  assert.match(calls[0].body.text, /^☀️ <b>Good morning!<\/b>/);
+  assert.match(calls[0].body.text, /^☀️ <b>Pillot<\/b>\n<b>Daily report · Medication check-in<\/b>\n28 Oct 2026 · 09:00 ICT\n/);
 });
 
 test('large medication lists fit Telegram and stay navigable from the status and daily report', async () => {
