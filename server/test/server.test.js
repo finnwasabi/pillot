@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, createBot, createStore, changeText, esc, normalize, statusText, validateSnapshot, vnTime } from '../server.js';
@@ -82,6 +82,15 @@ test('spec example is valid, broken ones are not', () => {
   assert.match(validateSnapshot({ ...spec, name: 'x'.repeat(61) }), /name/);
 });
 
+test('timestamps must be real UTC dates and names count visible characters', () => {
+  assert.match(validateSnapshot({ ...spec, updatedAt: '2026-02-30T00:00:00Z' }), /updatedAt/);
+  assert.match(validateSnapshot(later(spec, spec.updatedAt, { deadlineAt: '2026-10-28T25:00:00Z' })), /deadlineAt/);
+  assert.match(validateSnapshot(later(spec, spec.updatedAt, { lastTakenAt: '2025-02-29T00:00:00Z' })), /lastTakenAt/);
+  assert.match(validateSnapshot({ ...spec, medications: [pill, pill] }), /id must be unique/);
+  assert.equal(validateSnapshot({ ...spec, updatedAt: '2024-02-29T00:00:00Z', name: '👩🏽‍💻'.repeat(60) }), null);
+  assert.equal(validateSnapshot(later(spec, spec.updatedAt, { name: '🇻🇳'.repeat(40) })), null);
+});
+
 test('version 1 from older apps is still accepted and stored as version 2', async () => {
   assert.equal(validateSnapshot(v1), null);
   assert.equal(validateSnapshot({ ...v1, lateCount: undefined }), null);
@@ -126,6 +135,20 @@ test('message set by the bot comes back on the next sync', async () => {
   store.set({ message: 'Sleep early tonight' });
   await withServer(store, async (request) => {
     assert.deepEqual(await (await request('POST', spec)).json(), { stale: false, message: 'Sleep early tonight' });
+  });
+});
+
+test('a failed disk write leaves the previous snapshot in place', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ners-'));
+  const store = createStore(dir);
+  store.set({ snapshot: spec });
+  mkdirSync(join(dir, 'state.json.tmp'));
+
+  await withServer(store, async (request, sent) => {
+    const updated = later(spec, '2026-10-28T15:00:00Z', { lastTakenAt: '2026-10-28T15:00:00Z' });
+    assert.equal((await request('POST', updated)).status, 503);
+    assert.deepEqual(await (await request('GET')).json(), spec);
+    assert.deepEqual(sent, []);
   });
 });
 
@@ -230,7 +253,74 @@ test('the 09:00 report is sent once a day', async () => {
   await bot.dailyReport(Date.parse('2026-10-28T02:00:00Z')); // 09:00 Vietnam time
   await bot.dailyReport(Date.parse('2026-10-28T02:01:00Z'));
   assert.equal(calls.length, 1);
-  assert.match(calls[0].body.text, /^☀️ <b>Good morning!<\/b>/);
+  assert.match(calls[0].body.text, /^☀️ <b>Pillot<\/b>\n<b>Daily report · Medication check-in<\/b>\n28 Oct 2026 · 09:00 ICT\n/);
+});
+
+test('large medication lists fit Telegram and stay navigable from the status and daily report', async () => {
+  const medications = Array.from({ length: 20 }, (_, i) => ({
+    ...pill, id: String(i), name: `${i + 1}. ${'💊'.repeat(36)}`, dosesPerDay: 6,
+    takenCount: 1000, lateCount: 100, missedCount: 100, madeUpCount: 50, skippedCount: 90,
+    pillsPerDose: 2, pillsRemaining: 5,
+  }));
+  const snapshot = { ...spec, medications };
+  assert.equal(validateSnapshot(snapshot), null);
+  assert.ok(Array.from(statusText(snapshot).replace(/<\/?b>/g, '')).length > 4096);
+
+  const store = tempStore();
+  store.set({ snapshot });
+  const { calls, fetchImpl } = fakeTelegram();
+  const bot = createBot({ token: 't', chatId: '42', store, publicUrl: 'https://x/ners', apiToken: 'a', fetchImpl });
+  await bot.handle('/check');
+  await bot.dailyReport(Date.parse('2026-10-28T02:00:00Z'));
+  for (const { body } of calls) {
+    assert.ok(body.text.length <= 4096);
+    assert.match(body.text, /<b>1\. 💊/u);
+    assert.match(body.text, /Updated |Not synced since /);
+  }
+
+  const next = calls.at(-1).body.reply_markup.inline_keyboard[0].at(-1).callback_data;
+  await bot.handleCallback({ id: 'q1', data: next, message: { message_id: 7, chat: { id: 42 } } });
+  const secondPage = calls.find((c) => c.method === 'editMessageText').body;
+  assert.ok(secondPage.text.length <= 4096);
+  assert.match(secondPage.text, /<b>20\. 💊/u);
+  assert.doesNotMatch(secondPage.text, /<b>1\. 💊/u);
+
+  const lines = Array.from({ length: 50 }, (_, i) => `💊 <b>${i + 1}. ${'💊'.repeat(39)}</b> was updated.`);
+  const start = calls.length;
+  await bot.say(lines.join('\n'));
+  const sent = calls.slice(start).map((call) => call.body.text);
+  assert.ok(sent.length > 1 && sent.every((text) => text.length <= 4096));
+  assert.equal(sent.join('\n'), lines.join('\n'));
+});
+
+test('scheduled Telegram sends retry after failure and only one request can be in flight', async () => {
+  const now = Date.parse('2026-10-28T14:20:00Z');
+  for (const [job, key] of [['dailyReport', 'lastReportDay'], ['checkDeadlines', 'nudged']]) {
+    const store = tempStore();
+    store.set({ snapshot: spec });
+    let attempts = 0;
+    let finish;
+    const fetchImpl = () => {
+      attempts += 1;
+      return new Promise((resolve) => { finish = (result) => resolve({ json: async () => result }); });
+    };
+    const bot = createBot({ token: 't', chatId: '42', store, publicUrl: 'https://x/ners', apiToken: 'a', fetchImpl });
+
+    const failed = assert.rejects(bot[job](now), /unavailable/);
+    await bot[job](now);
+    assert.equal(attempts, 1);
+    finish({ ok: false, description: 'unavailable' });
+    await failed;
+    assert.equal(store.get()[key] ?? null, null);
+
+    const retry = bot[job](now + 60_000);
+    assert.equal(attempts, 2);
+    finish({ ok: true });
+    await retry;
+    assert.ok(store.get()[key]);
+    await bot[job](now + 120_000);
+    assert.equal(attempts, 2);
+  }
 });
 
 test('profile sets commands and descriptions', async () => {

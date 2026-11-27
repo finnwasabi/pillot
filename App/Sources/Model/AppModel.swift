@@ -15,13 +15,15 @@ import WidgetKit
 final class AppModel {
     static let shared = AppModel()
 
-    private(set) var medications: [Medication] {
+    private(set) var medications: [Medication] = [] {
         didSet { summaryCache = nil }
     }
     /// Load, save or scheduling errors. Shown on the Today screen, never swallowed.
-    var issue: String? { scheduleIssue ?? dataIssue }
-    private var dataIssue: String?
+    var issue: String? { dataIssue ?? scheduleIssue }
+    private(set) var dataIssue: String?
     private var scheduleIssue: String?
+    private enum StorageState { case pending, loaded, recoveryCopySaved }
+    @ObservationIgnored private var storageState = StorageState.pending
     /// The latest message the partner sent through the bot, received on sync.
     private(set) var message: String? = UserDefaults.standard.string(forKey: "message")
 
@@ -133,8 +135,9 @@ final class AppModel {
     private(set) var connection: SyncConnection? = ConnectionKeychain.load().flatMap(SyncConnection.init(code:))
     var shareEnabled: Bool = UserDefaults.standard.object(forKey: "shareEnabled") as? Bool ?? true {
         didSet {
+            guard shareEnabled != oldValue else { return }
             UserDefaults.standard.set(shareEnabled, forKey: "shareEnabled")
-            Task { await sync() }
+            if shareEnabled { Task { await sync() } } else { cancelUpload() }
         }
     }
     private(set) var lastSync: Date? = UserDefaults.standard.object(forKey: "lastSync") as? Date
@@ -145,6 +148,10 @@ final class AppModel {
     private let scheduler = ReminderScheduler()
     private let syncClient = SyncClient()
     private let network = NWPathMonitor()
+    @ObservationIgnored private var uploadRequested = false
+    @ObservationIgnored private var uploadTask: Task<Void, Never>?
+    @ObservationIgnored private var uploadRequest: Task<SyncClient.Reply, Error>?
+    @ObservationIgnored private var lastSnapshotSecond: Date?
 
     init() {
         let directory = URL.applicationSupportDirectory
@@ -160,20 +167,7 @@ final class AppModel {
         }
         SharedStorage.defaults?.set(AppLanguage.current.rawValue, forKey: AppLanguage.key)
         vibrateOnly = UserDefaults.standard.bool(forKey: "vibrateOnly")
-        do {
-            medications = try store.load()
-        } catch {
-            // Keep the corrupt file for recovery and continue empty so the app still opens.
-            let backup = directory.appending(path: "state-corrupt-\(Int(Date.now.timeIntervalSince1970)).json")
-            try? FileManager.default.moveItem(at: store.url, to: backup)
-            medications = []
-            dataIssue = L("Không đọc được dữ liệu cũ, đã cất vào \(backup.lastPathComponent). Thêm lại thuốc trong tab Thuốc.", "Could not read old data, saved it as \(backup.lastPathComponent). Add your medications again in the Meds tab.")
-        }
-        // Data from before medications had names: give it one in the chosen language.
-        if medications.contains(where: { $0.name.isEmpty }) {
-            for i in medications.indices where medications[i].name.isEmpty { medications[i].name = L("Thuốc hằng ngày", "Daily pill") }
-            persist()
-        }
+        _ = loadStateIfNeeded()
         // When the network comes back (after landing), send the latest snapshot.
         network.pathUpdateHandler = { path in
             guard path.status == .satisfied else { return }
@@ -217,52 +211,150 @@ final class AppModel {
 
     // MARK: Connection
 
-    /// Paste the connection code from the /link command. Returns `false` if the code is malformed.
-    func connect(code: String) async -> Bool {
-        guard let parsed = SyncConnection(code: code) else { return false }
-        ConnectionKeychain.save(code.trimmingCharacters(in: .whitespacesAndNewlines))
+    enum ConnectionFailure: LocalizedError {
+        case invalidCode
+        case keychain(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidCode:
+                L("Mã không đúng dạng. Mã bắt đầu bằng https:// và có dấu #.", "Invalid code. It starts with https:// and contains #.")
+            case .keychain(let error):
+                L("Không lưu được kết nối: \(error.localizedDescription)", "Could not save the connection: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Saves the code from /link and starts syncing without making the screen wait for the network.
+    func connect(code: String) throws {
+        guard let parsed = SyncConnection(code: code) else { throw ConnectionFailure.invalidCode }
+        do {
+            try ConnectionKeychain.save(code.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            throw ConnectionFailure.keychain(error)
+        }
+        if connection != parsed { resetSyncStatus() }
         connection = parsed
-        await sync()
-        return true
+        Task { await sync() }
     }
 
     func disconnect() {
-        ConnectionKeychain.save(nil)
+        do {
+            try ConnectionKeychain.save(nil)
+        } catch {
+            syncIssue = L("Không gỡ được kết nối: \(error.localizedDescription)", "Could not disconnect: \(error.localizedDescription)")
+            return
+        }
         connection = nil
+        resetSyncStatus()
+    }
+
+    private func resetSyncStatus() {
+        cancelUpload()
+        message = nil
+        lastSync = nil
         syncIssue = nil
+        UserDefaults.standard.removeObject(forKey: "message")
+        UserDefaults.standard.removeObject(forKey: "lastSync")
+    }
+
+    private func cancelUpload() {
+        uploadRequested = false
+        uploadRequest?.cancel()
     }
 
     func sync() async {
-        guard shareEnabled, let connection else { return }
-        do {
+        guard shareEnabled, connection != nil, loadStateIfNeeded() else { return }
+        uploadRequested = true
+        if uploadTask == nil { uploadTask = Task { await uploadSnapshots() } }
+        await uploadTask?.value
+    }
+
+    private func uploadSnapshots() async {
+        defer { uploadTask = nil }
+        while uploadRequested, shareEnabled, let connection {
+            let now = Date.now
+            // The server keeps one snapshot per wire second. Wait before building a newer snapshot in the same second.
+            if let nextSecond = lastSnapshotSecond?.addingTimeInterval(1) {
+                let wait = nextSecond.timeIntervalSince(now)
+                if wait > 0, wait <= 1 {
+                    try? await Task.sleep(for: .seconds(wait))
+                    continue
+                }
+            }
+            uploadRequested = false
             let name = userName.trimmingCharacters(in: .whitespaces)
-            let snapshot = Snapshot(name: name.isEmpty ? nil : String(name.prefix(60)), medications: medications, now: .now)
-            let reply = try await syncClient.send(snapshot, to: connection)
-            message = reply.message
-            UserDefaults.standard.set(reply.message, forKey: "message")
-            lastSync = .now
-            UserDefaults.standard.set(lastSync, forKey: "lastSync")
-            syncIssue = nil
-        } catch {
-            syncIssue = L("Chưa đồng bộ được: \(error.localizedDescription) App sẽ gửi lại khi có mạng.", "Not synced yet: \(error.localizedDescription) The app retries when online.")
+            let snapshot = Snapshot(name: name.isEmpty ? nil : String(name.prefix(60)), medications: medications, now: now)
+            lastSnapshotSecond = snapshot.updatedAt
+            let request = Task { try await syncClient.send(snapshot, to: connection) }
+            uploadRequest = request
+            let result = await request.result
+            uploadRequest = nil
+            guard !request.isCancelled else { continue }
+            switch result {
+            case .success(let reply):
+                message = reply.message
+                UserDefaults.standard.set(reply.message, forKey: "message")
+                if reply.stale {
+                    syncIssue = L("Server đã có dữ liệu mới hơn. Kiểm tra ngày giờ trên máy.", "The server has newer data. Check the date and time on this device.")
+                } else {
+                    lastSync = .now
+                    UserDefaults.standard.set(lastSync, forKey: "lastSync")
+                    syncIssue = nil
+                }
+            case .failure(let error):
+                syncIssue = L("Chưa đồng bộ được: \(error.localizedDescription) App sẽ gửi lại khi có mạng.", "Not synced yet: \(error.localizedDescription) The app retries when online.")
+            }
         }
     }
 
     // MARK: Actions
 
-    /// "Taken" for these medications. An empty list (an alarm from before medications existed) means every medication
-    /// that is due now.
-    func markTaken(_ ids: [UUID], now: Date = .now) async {
-        let targets = ids.isEmpty ? medications.filter { $0.planner.currentDose(now: now).dueAt <= now }.map(\.id) : ids
-        for id in targets {
-            guard let i = medications.firstIndex(where: { $0.id == id }) else { continue }
+    /// "Taken" for the medications the user selected in the app.
+    @discardableResult
+    func markTaken(_ ids: [UUID], now: Date = .now) async -> [Medication] {
+        guard !ids.isEmpty, loadStateIfNeeded() else { return [] }
+        var updated = medications
+        var taken: [Medication] = []
+        for id in ids {
+            guard let i = updated.firstIndex(where: { $0.id == id }) else { continue }
             // Tapping on the alarm and again in the app counts once.
-            if let last = medications[i].planner.lastTaken(now: now)?.takenAt,
-               now.timeIntervalSince(last) < medications[i].settings.undoWindow { continue }
-            medications[i].planner.markTaken(at: now)
+            if let last = updated[i].planner.lastTaken(now: now)?.takenAt,
+               now.timeIntervalSince(last) < updated[i].settings.undoWindow { continue }
+            updated[i].planner.markTaken(at: now)
+            taken.append(updated[i])
         }
-        persist()
-        await resync(cancelActiveFor: Set(targets))
+        guard !taken.isEmpty, saveMedications(updated) else { return [] }
+        await resync(cancelActiveFor: Set(taken.map(\.id)))
+        return taken
+    }
+
+    /// The bulk action and Shortcut both use the same set of due, active doses.
+    func dueDoses(now: Date, using summaries: [UUID: PlannerSummary]? = nil) -> [UUID: Date] {
+        var due: [UUID: Date] = [:]
+        for medication in medications where !medication.settings.asNeeded {
+            guard !medication.settings.courseEnded(now: now), medication.settings.pausedUntil(now: now) == nil else { continue }
+            let date = summaries?[medication.id]?.dose.dueAt ?? medication.planner.currentDose(now: now).dueAt
+            if date <= now { due[medication.id] = date }
+        }
+        return due
+    }
+
+    /// External actions are tied to the dose shown when the alert or widget was created.
+    private func matchingDoseIDs(_ dueDates: [UUID: Date], now: Date) -> [UUID] {
+        guard !dueDates.isEmpty, loadStateIfNeeded() else { return [] }
+        return medications.compactMap { medication in
+            guard let dueAt = dueDates[medication.id], dueAt != .distantFuture, !medication.settings.asNeeded,
+                  !medication.settings.courseEnded(now: now), medication.settings.pausedUntil(now: now) == nil,
+                  dueAt <= now || medication.planner.cycleBreakUntil(now: now) == nil,
+                  medication.planner.currentDose(now: now).dueAt == dueAt else { return nil }
+            return medication.id
+        }
+    }
+
+    @discardableResult
+    func markTaken(dosesDueAt: [UUID: Date], now: Date = .now) async -> [Medication] {
+        await markTaken(matchingDoseIDs(dosesDueAt, now: now), now: now)
     }
 
     /// Slide to stop or the side button on a ringing alarm: silences this ring, the next one is already scheduled.
@@ -277,7 +369,7 @@ final class AppModel {
     struct TakenQuestion: Identifiable {
         let id = UUID()
         /// Empty for the test alarm.
-        let ids: [UUID]
+        let dosesDueAt: [UUID: Date]
         let names: String
     }
     var takenQuestion: TakenQuestion?
@@ -298,19 +390,17 @@ final class AppModel {
     }
     var timeEdit: TimeEdit?
 
-    /// The Taken button on an alarm: silence the ring now, log only once the person confirms in the app.
-    func askTaken(_ medications: String) {
-        guard medications != ReminderScheduler.testIDs else {
-            ReminderScheduler.stopTestAlarm()
-            takenQuestion = TakenQuestion(ids: [], names: L("thuốc thử", "the test pill"))
-            return
-        }
-        let ids = medications.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
-        // An empty list (an alarm from before medications) means every medication due now, as in `markTaken`.
-        let meds = ids.isEmpty ? medications.isEmpty ? self.medications.filter { $0.planner.currentDose(now: .now).dueAt <= .now } : [] : ids.compactMap(medication)
-        guard !meds.isEmpty else { return }
-        scheduler.silence(meds.map(\.id))
-        takenQuestion = TakenQuestion(ids: meds.map(\.id), names: AlertPlanner.names(meds.map(\.name), language: language))
+    /// The Taken button on an alarm still needs confirmation in the app.
+    func askTaken(dosesDueAt: [UUID: Date]) {
+        let ids = Set(matchingDoseIDs(dosesDueAt, now: .now))
+        guard !ids.isEmpty else { return }
+        let names = medications.filter { ids.contains($0.id) }.map(\.name)
+        takenQuestion = TakenQuestion(dosesDueAt: dosesDueAt.filter { ids.contains($0.key) },
+                                      names: AlertPlanner.names(names, language: language))
+    }
+
+    func askTestTaken() {
+        takenQuestion = TakenQuestion(dosesDueAt: [:], names: L("thuốc thử", "the test pill"))
     }
 
     /// The test alarm in Settings; the error text when it could not be scheduled.
@@ -319,14 +409,16 @@ final class AppModel {
     }
 
     func undo(_ id: UUID, now: Date = .now) async {
-        guard let i = medications.firstIndex(where: { $0.id == id }), medications[i].planner.undoLastTaken(now: now) else { return }
-        persist()
+        guard loadStateIfNeeded(), let i = medications.firstIndex(where: { $0.id == id }) else { return }
+        var updated = medications
+        guard updated[i].planner.undoLastTaken(now: now), saveMedications(updated) else { return }
         await resync()
     }
 
     /// "Skip this dose": not a miss, uses no pill. Stops the medication's ringing or snoozed alarm.
-    func skip(_ id: UUID) {
-        update(id, stopsAlarms: true) { $0.planner.skip(at: .now) }
+    func skip(_ id: UUID, dueAt: Date, now: Date = .now) {
+        guard !matchingDoseIDs([id: dueAt], now: now).isEmpty else { return }
+        update(id, stopsAlarms: true) { $0.planner.skip(at: now) }
     }
 
     // MARK: Backup
@@ -348,20 +440,22 @@ final class AppModel {
     }
 
     /// Replaces every medication and the preferences with the backup's, then reschedules.
-    func restore(_ backup: Backup) {
+    func restore(_ backup: Backup) -> Bool {
+        guard loadStateIfNeeded() || storageState == .recoveryCopySaved else { return false }
         let replaced = Set(medications.map(\.id))
-        medications = Array(backup.medications.prefix(Medication.limit))
         let p = backup.preferences
+        let restored = migratedMedications(backup.medications, now: .now)
+        guard saveMedications(restored) else { return false }
         if let value = p["userName"] { userName = value }
         if let value = p["partnerName"] { partnerName = value }
         if let value = p["theme"].flatMap(AppTheme.init(rawValue:)) { theme = value }
         if let value = p["vibrateOnly"].flatMap(Bool.init) { vibrateOnly = value }
         if let value = p["snoozeMinutes"].flatMap(Int.init) { snoozeMinutes = value }
         if let value = p["headsUpMinutes"].flatMap(Int.init) { headsUpMinutes = value }
-        persist()
         // The language last: it rebuilds every screen.
         if let value = p["language"].flatMap(Language.init(rawValue:)), value != language { language = value }
         Task { await resync(cancelActiveFor: replaced.union(medications.map(\.id))) }
+        return true
     }
 
     /// "Mark made up" for a missed dose.
@@ -371,32 +465,91 @@ final class AppModel {
 
     /// Every change to one medication's settings, pills, pauses or taken times goes through here: save, then reschedule.
     /// `stopsAlarms`: also stop this medication's ringing or snoozed alarm, for example when pausing it.
-    func update(_ id: UUID, stopsAlarms: Bool = false, _ change: (inout Medication) -> Void) {
-        guard let i = medications.firstIndex(where: { $0.id == id }) else { return }
-        change(&medications[i])
-        persist()
+    @discardableResult
+    func update(_ id: UUID, stopsAlarms: Bool = false, _ change: (inout Medication) -> Void) -> Bool {
+        guard loadStateIfNeeded(), let i = medications.firstIndex(where: { $0.id == id }) else { return false }
+        var updated = medications
+        change(&updated[i])
+        if updated[i] == medications[i] { return true }
+        guard saveMedications(updated) else { return false }
         Task { await resync(cancelActiveFor: stopsAlarms ? [id] : []) }
+        return true
     }
 
-    func add(_ medication: Medication) {
-        guard medications.count < Medication.limit else { return }
-        medications.append(medication)
-        persist()
+    @discardableResult
+    func add(_ medication: Medication) -> Bool {
+        guard loadStateIfNeeded() || storageState == .recoveryCopySaved, medications.count < Medication.limit else { return false }
+        let updated = medications + migratedMedications([medication], now: .now)
+        guard saveMedications(updated) else { return false }
         Task { await resync() }
+        return true
     }
 
-    func delete(_ id: UUID) {
-        medications.removeAll { $0.id == id }
-        persist()
+    func delete(_ id: UUID) -> Bool {
+        guard loadStateIfNeeded(), saveMedications(medications.filter { $0.id != id }) else { return false }
         Task { await resync(cancelActiveFor: [id]) }
+        return true
     }
 
-    private func persist() {
+    private func loadStateIfNeeded() -> Bool {
+        guard storageState == .pending else { return storageState == .loaded }
         do {
-            try store.save(medications)
+            let saved = try store.load()
+            let migrated = migratedMedications(saved, now: .now)
+            if migrated != saved { return saveMedications(migrated) }
+            medications = saved
+            storageState = .loaded
+            dataIssue = nil
+            return true
+        } catch {
+            // A temporarily unreadable file must never be treated as empty or replaced.
+            let corrupt = error is DecodingError || (error as? CocoaError)?.code == .fileReadCorruptFile
+            if corrupt {
+                let directory = URL.applicationSupportDirectory
+                let backup = directory.appending(path: "state-corrupt-\(UUID().uuidString).json")
+                do {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: store.url, to: backup)
+                    storageState = .recoveryCopySaved
+                    dataIssue = L("Không đọc được dữ liệu cũ, đã sao lưu vào \(backup.lastPathComponent).",
+                                  "Could not read old data. A copy was saved as \(backup.lastPathComponent).")
+                    return false
+                } catch {
+                    dataIssue = L("Không sao lưu được dữ liệu cũ: \(error.localizedDescription)",
+                                  "Could not preserve old data: \(error.localizedDescription)")
+                    return false
+                }
+            }
+            dataIssue = L("Chưa đọc được dữ liệu thuốc. Mở lại app khi đã mở khoá máy.",
+                          "Could not read your medication data. Reopen the app after unlocking your phone.")
+            return false
+        }
+    }
+
+    private func migratedMedications(_ medications: [Medication], now: Date) -> [Medication] {
+        medications.map { existing in
+            var medication = existing
+            if medication.name.isEmpty { medication.name = L("Thuốc hằng ngày", "Daily pill") }
+            // Older medications without takes have no start date. Start tracking from this visit.
+            if medication.settings.scheduleSince == nil, medication.history.isEmpty, !medication.settings.asNeeded {
+                medication.settings.scheduleSince = now
+            }
+            return medication
+        }
+    }
+
+    /// Commit to disk before publishing changes or changing the schedule.
+    private func saveMedications(_ updated: [Medication]) -> Bool {
+        do {
+            try store.save(updated)
+            medications = updated
+            storageState = .loaded
+            dataIssue = nil
             WidgetCenter.shared.reloadAllTimelines()
+            return true
         } catch {
             dataIssue = L("Không lưu được dữ liệu: \(error.localizedDescription)", "Could not save your data: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -411,10 +564,10 @@ final class AppModel {
 
     /// On every launch: asks for notifications when never asked, so a skipped prompt gets a second chance. Not while
     /// onboarding is due (it asks for alarms and notifications itself) or in screenshot launches.
-    func checkNotifications() async {
+    func checkNotifications(onboarding: Bool = false) async {
         let center = UNUserNotificationCenter.current()
         var status = await center.notificationSettings().authorizationStatus
-        if status == .notDetermined, AlarmManager.shared.authorizationState != .notDetermined,
+        if status == .notDetermined, onboarding || AlarmManager.shared.authorizationState != .notDetermined,
            UserDefaults.standard.string(forKey: "screen") == nil {
             _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
             status = await center.notificationSettings().authorizationStatus
@@ -453,11 +606,12 @@ final class AppModel {
     private var syncAgain = false
     private var cancelPending: Set<UUID> = []
     /// What the last pass handed to the scheduler without a failure. The same plan again means nothing to change.
-    @ObservationIgnored private var lastApplied: (alerts: [PlannedAlert], snoozeMinutes: Int, language: Language, alarmsAvailable: Bool)?
+    @ObservationIgnored private var lastApplied: (alerts: [PlannedAlert], snoozeMinutes: Int, language: Language, alarmsAvailable: Bool, notificationStatus: UNAuthorizationStatus?)?
 
     /// Reschedules all alarms and notifications, changing only what differs. Overlapping calls coalesce into one more pass
     /// after the running one. `cancelActiveFor`: also stop alarms of these medications that are ringing or snoozed (after a dose is taken).
     func resync(cancelActiveFor ids: Set<UUID> = []) async {
+        guard loadStateIfNeeded() else { return }
         cancelPending.formUnion(ids)
         guard !syncing else {
             syncAgain = true
@@ -472,17 +626,21 @@ final class AppModel {
             cancelPending = []
             let now = Date.now
             let started = ContinuousClock.now
+            let snoozeMinutes = self.snoozeMinutes
+            let language = self.language
             let alarmsAvailable = AlarmManager.shared.authorizationState == .authorized
+            let notificationStatus = self.notificationStatus
             let alerts = AlertPlanner.alerts(
                 for: medications.map { MedicationReminders($0, now: now, language: language, cadence: TimeInterval(snoozeMinutes * 60)) },
                 vibrateOnly: vibrateOnly,
                 alarmsAvailable: alarmsAvailable,
                 language: language,
-                headsUp: TimeInterval(headsUpMinutes * 60)
+                headsUp: TimeInterval(headsUpMinutes * 60),
+                now: now
             )
             // Opening the app with nothing due in between plans the same alerts: skip reading back every alarm and notification.
             if cancel.isEmpty, let lastApplied, lastApplied.alerts == alerts, lastApplied.snoozeMinutes == snoozeMinutes, lastApplied.language == language,
-               lastApplied.alarmsAvailable == alarmsAvailable,
+               lastApplied.alarmsAvailable == alarmsAvailable, lastApplied.notificationStatus == notificationStatus,
                var report = scheduleReport {
                 report.result.changed = 0
                 report.at = now
@@ -492,7 +650,7 @@ final class AppModel {
             }
             let result = await scheduler.apply(alerts, cancelActiveFor: cancel, snooze: TimeInterval(snoozeMinutes * 60), language: language)
             scheduleReport = ScheduleReport(result: result, at: now, duration: ContinuousClock.now - started)
-            lastApplied = result.failures == 0 ? (alerts, snoozeMinutes, language, alarmsAvailable) : nil
+            lastApplied = result.failures == 0 ? (alerts, snoozeMinutes, language, alarmsAvailable, notificationStatus) : nil
             let failures = result.failures
             // Screenshot launches (`-screen`) run in the Simulator, which always denies alarms.
             if medications.isEmpty || UserDefaults.standard.string(forKey: "screen") != nil {

@@ -58,9 +58,10 @@ struct NextDoseEntry: TimelineEntry {
         guard let medications else { return NextDoseEntry(date: now, items: [], readable: false) }
         // Taken-when-needed and finished medications have no next dose to show.
         let scheduled = medications.filter { !$0.settings.asNeeded && !$0.settings.courseEnded(now: now) }
-        let items = scheduled.map { medication -> Item in
+        let items = scheduled.compactMap { medication -> Item? in
             let summary = medication.planner.summary(now: now)
             let dose = summary.dose
+            guard dose.dueAt != .distantFuture else { return nil }
             let state: State
             var time = dose.dueAt
             if let until = summary.restingUntil, now < dose.dueAt {
@@ -135,15 +136,19 @@ struct NextDoseProvider: AppIntentTimelineProvider {
         Self.timeline(pinned: configuration.medication?.id)
     }
 
-    /// One entry now and one at every dose time and deadline in the next day, so states change on time without the
-    /// app. The app also reloads the widgets after every change.
+    /// Entries at the next dose's transitions, so the widget can update without the app running.
     static func timeline(pinned: UUID?) -> Timeline<NextDoseEntry> {
         let now = Date.now
         let medications = load()
         var moments: Set<Date> = []
-        for medication in medications ?? [] {
-            let dose = medication.planner.currentDose(now: now)
-            for moment in [dose.dueAt, dose.deadlineAt] where moment > now && moment < now.addingTimeInterval(24 * 3600) {
+        let tomorrow = now.addingTimeInterval(24 * 3600)
+        for medication in medications ?? [] where !medication.settings.asNeeded && !medication.settings.courseEnded(now: now) {
+            let planner = medication.planner
+            let dose = planner.currentDose(now: now)
+            // The planner considers the dose pending up to and including lateUntil.
+            let momentsForDose: [Date?] = [dose.dueAt, dose.deadlineAt, dose.lateUntil.addingTimeInterval(1),
+                                          planner.restingUntil(now: now), medication.settings.courseEnd]
+            for moment in momentsForDose.compactMap({ $0 }) where moment > now && moment < tomorrow {
                 moments.insert(moment)
             }
         }
@@ -203,7 +208,7 @@ struct NextDoseView: View {
     @ViewBuilder
     private var content: some View {
         if !entry.readable || entry.items.isEmpty {
-            Text(entry.readable ? (en ? "No meds yet" : "Chưa có thuốc") : (en ? "Open Pillot once" : "Mở Pillot một lần"))
+            Text(entry.readable ? (en ? "No scheduled doses" : "Không có liều theo lịch") : (en ? "Open Pillot once" : "Mở Pillot một lần"))
                 .font(.headline.weight(.heavy))
         } else {
             switch family {
@@ -217,15 +222,13 @@ struct NextDoseView: View {
                     Text(clock(item.time)).font(.caption.weight(.bold)).minimumScaleFactor(0.6)
                 }
             case .accessoryRectangular:
+                let item = entry.items[0]
                 let rows = VStack(alignment: .leading, spacing: 1) {
-                    ForEach(entry.items.prefix(2)) { item in
-                        Text("\(clock(item.time)) · \(item.name)").font(.headline).lineLimit(1)
-                        Text(item.isDue ? (en ? "Tap when taken" : "Chạm khi đã uống") : label(item.state)).font(.caption).lineLimit(1)
-                    }
+                    Text("\(clock(item.time)) · \(item.name)").font(.headline).lineLimit(1)
+                    Text(item.isDue ? (en ? "Tap when taken" : "Chạm khi đã uống") : label(item.state)).font(.caption).lineLimit(1)
                 }
-                // On the lock screen the whole widget is the button while the first dose is due.
-                if entry.items[0].isDue {
-                    Button(intent: MarkTakenIntent(ids: [entry.items[0].id])) { rows }.buttonStyle(.plain)
+                if item.isDue {
+                    Button(intent: MarkTakenIntent(id: item.id, dueAt: item.time)) { rows }.buttonStyle(.plain)
                 } else {
                     rows
                 }
@@ -278,7 +281,7 @@ struct NextDoseView: View {
 
     /// Marks this medication as taken without opening the app. The app saves, reschedules and reloads the widget.
     private func takenButton(_ item: NextDoseEntry.Item, title: String?) -> some View {
-        Button(intent: MarkTakenIntent(ids: [item.id])) {
+        Button(intent: MarkTakenIntent(id: item.id, dueAt: item.time)) {
             Label(title ?? (en ? "Taken" : "Đã uống"), systemImage: "checkmark")
                 .labelStyle(TakenLabelStyle(showsTitle: title != nil))
                 .font(.caption.weight(.black))

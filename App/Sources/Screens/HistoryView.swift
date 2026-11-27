@@ -18,6 +18,7 @@ struct HistoryView: View {
     struct Entry: Identifiable {
         var medication: Medication
         var record: DoseRecord
+        var day: Date
         /// Two medications can miss at the same moment, so the id needs both.
         var id: String { "\(medication.id)\(record.id)" }
     }
@@ -34,7 +35,10 @@ struct HistoryView: View {
         let key = filter?.uuidString ?? "all"
         let days = model.derived("days \(key)", now: now) { mergedDayStatuses(summaries.map { $0.1.dayStatuses() }) }
         let entries = model.derived("entries \(key)", now: now) {
-            summaries.flatMap { med, summary in summary.timeline.map { Entry(medication: med, record: $0) } }
+            summaries.flatMap { med, summary in
+                let planner = med.planner
+                return summary.timeline.map { Entry(medication: med, record: $0, day: planner.day(of: $0)) }
+            }
                 .sorted { moment($0.record) > moment($1.record) }
         }
         let month = monthStart(now: now)
@@ -48,7 +52,7 @@ struct HistoryView: View {
                     if model.medications.count > 1 { filterBar }
                     calendarCard(days: days, month: month, now: now)
                     // Under the calendar: the counts follow the month it shows.
-                    summaryCard(summaries.flatMap(\.1.timeline), month: month)
+                    summaryCard(entries, month: month)
                     entriesCard(entries)
                 }
                 .padding(.horizontal, 16)
@@ -102,13 +106,10 @@ struct HistoryView: View {
 
     /// Counts for the month on screen, like the calendar below. Before 0.3.5 "taken" counted only since pills were last
     /// added, so adding a pack reset it to 0. A record belongs to the dose it was for: a late or made-up dose to its dose time.
-    private func summaryCard(_ timeline: [DoseRecord], month: Date) -> some View {
+    private func summaryCard(_ entries: [Entry], month: Date) -> some View {
         let end = calendar.date(byAdding: .month, value: 1, to: month)!
-        let inMonth = timeline.filter { record in
-            let moment = [.madeUp, .late, .skipped].contains(record.status) ? record.scheduledAt : (record.takenAt ?? record.scheduledAt)
-            return moment >= month && moment < end
-        }
-        let count = { (statuses: [PillotCore.DoseStatus]) in inMonth.count(where: { statuses.contains($0.status) }) }
+        let inMonth = entries.filter { $0.day >= month && $0.day < end }
+        let count = { (statuses: [PillotCore.DoseStatus]) in inMonth.count(where: { statuses.contains($0.record.status) }) }
         // Top alignment keeps the numbers level even if one label wraps.
         return HStack(alignment: .top, spacing: 8) {
             stat(value: count([.taken, .late]), label: L("đã uống", "taken"), status: .taken)
@@ -231,7 +232,7 @@ struct HistoryView: View {
 
     /// `all` is every record, newest first; the card shows the selected day or the latest page.
     private func entriesCard(_ all: [Entry]) -> some View {
-        let entries = selectedDay.map { day in all.filter { $0.medication.planner.day(of: $0.record) == day } } ?? Array(all.prefix(shownCount))
+        let entries = selectedDay.map { day in all.filter { $0.day == day } } ?? Array(all.prefix(shownCount))
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(selectedDay.map(TodayText.dayTitle) ?? L("Gần đây", "Recent"))
@@ -311,8 +312,7 @@ struct EditTakenTimeSheet: View {
     /// On the delete button, not the sheet: since iOS 26 the dialog is a popover from the view it is attached to.
     private var removeDialog: some ViewModifier {
         RemoveDialog(isPresented: $confirmRemove, title: removeTitle, message: removeMessage) {
-            model.update(medicationID) { $0.planner.removeRecord(id: record.id) }
-            dismiss()
+            if model.update(medicationID, { $0.planner.removeRecord(id: record.id) }) { dismiss() }
         }
     }
 
@@ -327,9 +327,9 @@ struct EditTakenTimeSheet: View {
     private var removeMessage: String {
         switch record.status {
         case .skipped: L("Lần đó quay lại như chưa uống: còn trong giờ thì app nhắc tiếp, quá giờ thì tính hụt.", "The dose comes back as not taken: reminded again if there is still time, missed if not.")
-        case .madeUp: L("Lần đó sẽ hiện lại là hụt. Nếu đang đếm viên thì được trả lại một viên.", "That dose shows as missed again. If you count pills, one pill is given back.")
-        default: L("Dùng khi lỡ bấm Đã uống. Lần đó quay lại như chưa uống: còn trong giờ thì app nhắc tiếp, quá giờ thì tính hụt. Nếu đang đếm viên thì được trả lại một viên.",
-                   "For a Taken tapped by mistake. The dose comes back as not taken: reminded again if there is still time, missed if not. If you count pills, one pill is given back.")
+        case .madeUp: L("Lần đó sẽ hiện lại là hụt. Nếu đang đếm viên, số viên còn lại sẽ được cập nhật.", "That dose shows as missed again. If you count pills, the remaining count is updated.")
+        default: L("Dùng khi lỡ bấm Đã uống. Lần đó quay lại như chưa uống: còn trong giờ thì app nhắc tiếp, quá giờ thì tính hụt. Nếu đang đếm viên, số viên còn lại sẽ được cập nhật.",
+                   "For a Taken tapped by mistake. The dose comes back as not taken: reminded again if there is still time, missed if not. If you count pills, the remaining count is updated.")
         }
     }
 
@@ -358,6 +358,7 @@ struct EditTakenTimeSheet: View {
                     .buttonStyle(NeoButtonStyle(fill: Palette.coral, large: false))
                     .modifier(removeDialog)
                 }
+                if let issue = model.dataIssue { Callout(text: issue, icon: "exclamationmark.octagon.fill") }
                 Spacer()
             }
             .padding(16)
@@ -369,8 +370,7 @@ struct EditTakenTimeSheet: View {
                 if record.status != .skipped {
                     ToolbarItem(placement: .confirmationAction) {
                         Button(L("Lưu", "Save")) {
-                            model.update(medicationID) { $0.planner.editTakenTime(id: record.id, to: date) }
-                            dismiss()
+                            if model.update(medicationID, { $0.planner.editTakenTime(id: record.id, to: date) }) { dismiss() }
                         }
                         .fontWeight(.heavy)
                     }

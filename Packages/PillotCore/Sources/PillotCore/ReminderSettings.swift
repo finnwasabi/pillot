@@ -38,24 +38,38 @@ public struct DoseCycle: Codable, Equatable, Sendable {
         self.startDay = VietnamClock.calendar.startOfDay(for: startDay)
     }
 
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        activeDays = try c.decode(Int.self, forKey: .activeDays)
+        breakDays = try c.decode(Int.self, forKey: .breakDays)
+        startDay = try c.decode(Date.self, forKey: .startDay)
+        guard activeDays > 0, breakDays > 0, !activeDays.addingReportingOverflow(breakDays).overflow else {
+            throw DecodingError.dataCorruptedError(forKey: .breakDays, in: c, debugDescription: "Invalid cycle lengths")
+        }
+    }
+
     /// True on a day off. Days before `startDay` count as days on.
     public func isBreak(_ date: Date) -> Bool {
-        let days = Self.vietnamDay(date) - Self.vietnamDay(startDay)
-        return days >= 0 && days % (activeDays + breakDays) >= activeDays
+        breakDaysRemaining(after: date) != nil
     }
 
     /// Days since 1970 in Vietnam time. Plain arithmetic: Vietnam is UTC+7 with no daylight saving, and this runs for
     /// every planned reminder, where a Calendar call per date made planning twenty times slower.
-    static func vietnamDay(_ date: Date) -> Int {
-        Int(((date.timeIntervalSince1970 + VietnamClock.offset) / VietnamClock.day).rounded(.down))
+    static func vietnamDay(_ date: Date) -> Double {
+        ((date.timeIntervalSince1970 + VietnamClock.offset) / VietnamClock.day).rounded(.down)
     }
 
     /// The start of the next day on, if `date` is on a day off.
     public func breakEnd(after date: Date) -> Date? {
-        guard isBreak(date) else { return nil }
-        var day = VietnamClock.calendar.startOfDay(for: date)
-        while isBreak(day) { day = VietnamClock.calendar.date(byAdding: .day, value: 1, to: day)! }
-        return day
+        breakDaysRemaining(after: date).map { VietnamClock.startOfDay(date).addingTimeInterval($0 * VietnamClock.day) }
+    }
+
+    private func breakDaysRemaining(after date: Date) -> Double? {
+        let days = Self.vietnamDay(date) - Self.vietnamDay(startDay)
+        let (length, overflow) = activeDays.addingReportingOverflow(breakDays)
+        guard days >= 0, activeDays > 0, breakDays > 0, !overflow else { return nil }
+        let dayInCycle = days.truncatingRemainder(dividingBy: Double(length))
+        return dayInCycle >= Double(activeDays) ? Double(length) - dayInCycle : nil
     }
 }
 
@@ -108,8 +122,8 @@ public struct ReminderSettings: Codable, Equatable, Sendable {
     /// Pills per dose allowed in the editor.
     public static let pillsPerDoseRange = 1...10
 
-    /// The moment the course is over: the end of `endDay`.
-    public var courseEnd: Date? { endDay.map { VietnamClock.startOfDay($0).addingTimeInterval(VietnamClock.day) } }
+    /// The moment a scheduled course is over: the end of `endDay`.
+    public var courseEnd: Date? { asNeeded ? nil : endDay.map { VietnamClock.startOfDay($0).addingTimeInterval(VietnamClock.day) } }
 
     public func courseEnded(now: Date) -> Bool { courseEnd.map { now >= $0 } ?? false }
 
@@ -187,7 +201,8 @@ public struct ReminderSettings: Codable, Equatable, Sendable {
 
     /// When the pause ends, if `now` is inside one.
     public func pausedUntil(now: Date) -> Date? {
-        pauses.filter { $0.contains(now) }.map(\.end).max()
+        guard !asNeeded else { return nil }
+        return pauses.filter { $0.contains(now) }.map(\.end).max()
     }
 
     // Tolerant decoding: missing fields fall back to defaults.

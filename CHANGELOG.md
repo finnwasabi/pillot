@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-27
+
+### Fixed
+
+- Keep the first scheduled dose pending when its reminder comes due, and keep the final dose of a course active through
+  the last Vietnam calendar day. Preserve past dose history when changing a schedule or switching to as-needed use.
+- Tie Taken actions to the dose shown on the notification, widget, or alarm. Use a local notification if an individual
+  alarm cannot be scheduled and prioritize dose reminders over quiet heads-ups.
+- Save medication changes before updating reminders. Preserve a recovery copy of unreadable data before replacement and
+  reject invalid backups with duplicate medications.
+- Serialize shared tracking updates so rapid changes are uploaded with distinct timestamps. Retry daily Telegram reports
+  and deadline nudges after failed sends and paginate large lists.
+
+### Performance
+
+- Calculate the next day on in a medication cycle directly instead of walking each day off.
+
 ## [0.6.1] - 2026-11-03
 
 ### Changed
@@ -317,7 +334,8 @@ All notable changes to this project are documented here. The format follows
 - Optional sync to a self-hosted service with a private Telegram bot.
 - Release builds and a SideStore source published from GitHub Actions.
 
-[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/finnwasabi/pillot/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/finnwasabi/pillot/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/finnwasabi/pillot/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/finnwasabi/pillot/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/finnwasabi/pillot/compare/v0.5.5...v0.5.6

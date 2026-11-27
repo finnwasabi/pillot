@@ -69,7 +69,7 @@ struct MedsView: View {
                         .frame(width: 30, height: 30)
                         .neo(Palette.surfaceOnFill, radius: 8, shadow: 0)
                         // Centre the box on the middle of the first line's capitals instead of sitting on its baseline.
-                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + halfCapHeight }
+                        .alignmentGuide(.firstTextBaseline) { [halfCapHeight] in $0[VerticalAlignment.center] + halfCapHeight }
                     Text(text)
                         .font(.body.weight(.semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -206,6 +206,7 @@ struct MedicationEditor: View {
                     }
                     section(L("Số viên", "Pills"), footer: counting ? nil : L("Tắt đếm thì app chỉ nhắc giờ.", "With counting off, the app only reminds you.")) { pills }
                     if let live { pauseSection(live) }
+                    if let issue = model.dataIssue { Callout(text: issue, icon: "exclamationmark.octagon.fill") }
                     if medication != nil {
                         Button(L("Xoá thuốc này", "Delete this medication"), role: .destructive) { confirmDelete = true }
                             .buttonStyle(NeoButtonStyle(fill: Palette.coral, large: false))
@@ -213,8 +214,7 @@ struct MedicationEditor: View {
                             // opened off to the side, and next to the file and alert presenters it did not open until something redrew the screen.
                             .confirmationDialog(L("Xoá \(trimmedName)?", "Delete \(trimmedName)?"), isPresented: $confirmDelete, titleVisibility: .visible) {
                                 Button(L("Xoá", "Delete"), role: .destructive) {
-                                    if let medication { model.delete(medication.id) }
-                                    dismiss()
+                                    if let medication, model.delete(medication.id) { dismiss() }
                                 }
                             } message: {
                                 Text(L("Lịch nhắc và lịch sử của thuốc này sẽ mất, không khôi phục được.", "Its reminders and history are deleted for good."))
@@ -610,24 +610,25 @@ struct MedicationEditor: View {
             let timing = s.mainHour != hour || s.mainMinute != minute || s.dosesPerDay != dosesPerDay || Int((s.maxInterval / 3600).rounded()) != gapHours
             // Anything that changes which doses were due also re-reads the past, so the past is frozen first.
             let reschedules = timing || s.asNeeded != asNeeded || s.cycle != cycleValue || s.endDay != endValue
+            func applyEdit(_ medication: inout Medication) {
+                if reschedules { medication.planner.freezeHistory(now: now) }
+                apply(&medication)
+            }
             if !confirmed && timing {
                 var copy = live
-                apply(&copy)
+                applyEdit(&copy)
                 let dose = copy.planner.currentDose(now: now)
                 if dose.exceedsMaxInterval {
                     warning = ResetPreview(dueAt: dose.dueAt, deadlineAt: dose.deadlineAt, exceedsMaxInterval: true)
                     return
                 }
             }
-            model.update(live.id) { medication in
-                if reschedules, !medication.history.isEmpty { medication.planner.freezeHistory(now: now) }
-                apply(&medication)
-            }
+            guard model.update(live.id, stopsAlarms: reschedules, applyEdit) else { return }
         } else if medication == nil {
             var medication = Medication(name: trimmedName, color: color, icon: icon,
                                         settings: ReminderSettings(mainHour: hour, mainMinute: minute, dosesPerDay: dosesPerDay))
             apply(&medication)
-            model.add(medication)
+            guard model.add(medication) else { return }
         }
         // An existing medication deleted while its editor was open is not brought back.
         dismiss()

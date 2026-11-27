@@ -7,18 +7,26 @@ struct MarkTakenIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Taken"
     static let isDiscoverable = false
 
-    /// Medication ids separated by commas. Empty for alarms from before medications existed.
+    /// One medication, stored under the same parameter name as existing widget buttons.
     @Parameter(title: "Medications")
     var medications: String
 
+    @Parameter(title: "Dose time")
+    var dueAt: Date?
+
     init() { medications = "" }
 
-    init(ids: [UUID]) { medications = ids.map(\.uuidString).joined(separator: ",") }
+    init(id: UUID, dueAt: Date) {
+        medications = id.uuidString
+        self.dueAt = dueAt
+    }
 
     @MainActor
     func perform() async throws -> some IntentResult {
         #if !WIDGET
-        await AppModel.shared.markTaken(medications.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+        if let id = UUID(uuidString: medications), let dueAt {
+            await AppModel.shared.markTaken(dosesDueAt: [id: dueAt])
+        }
         #endif
         return .result()
     }

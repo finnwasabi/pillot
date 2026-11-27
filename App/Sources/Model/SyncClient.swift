@@ -1,5 +1,6 @@
 import Foundation
 import PillotCore
+import Security
 
 /// A connection code shaped `https://host/path#token`, sent by the bot's /link command.
 struct SyncConnection: Equatable {
@@ -8,8 +9,9 @@ struct SyncConnection: Equatable {
 
     init?(code: String) {
         guard let url = URL(string: code.trimmingCharacters(in: .whitespacesAndNewlines)),
-              url.scheme == "https", let token = url.fragment, !token.isEmpty,
-              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+              url.scheme?.lowercased() == "https", let token = url.fragment, !token.isEmpty,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil else { return nil }
         parts.fragment = nil
         guard let base = parts.url else { return nil }
         endpoint = base.appending(path: "v1/snapshot")
@@ -61,13 +63,22 @@ nonisolated enum ConnectionKeychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func save(_ code: String?) {
-        SecItemDelete(query as CFDictionary)
-        guard let code else { return }
-        var item = query
-        item[kSecValueData as String] = Data(code.utf8)
+    static func save(_ code: String?) throws {
+        guard let code else {
+            let status = SecItemDelete(query as CFDictionary)
+            if status != errSecItemNotFound { try check(status) }
+            return
+        }
+        let data = [kSecValueData as String: Data(code.utf8)]
+        let status = SecItemUpdate(query as CFDictionary, data as CFDictionary)
+        guard status == errSecItemNotFound else { return try check(status) }
+        var item = query.merging(data) { _, value in value }
         // Readable after first unlock, so background App Intents can still sync while the phone is locked.
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(item as CFDictionary, nil)
+        try check(SecItemAdd(item as CFDictionary, nil))
+    }
+
+    private static func check(_ status: OSStatus) throws {
+        if status != errSecSuccess { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
     }
 }

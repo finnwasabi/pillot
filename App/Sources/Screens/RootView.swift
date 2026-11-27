@@ -56,8 +56,8 @@ struct RootView: View {
                isPresented: Binding(get: { model.takenQuestion != nil }, set: { if !$0 { model.takenQuestion = nil } }),
                presenting: model.takenQuestion) { question in
             Button(L("Đã uống", "Taken")) {
-                guard !question.ids.isEmpty else { return }
-                Task { await model.markTaken(question.ids) }
+                guard !question.dosesDueAt.isEmpty else { return }
+                Task { await model.markTaken(dosesDueAt: question.dosesDueAt) }
             }
             Button(L("Chưa", "Not yet"), role: .cancel) {}
         } message: { _ in

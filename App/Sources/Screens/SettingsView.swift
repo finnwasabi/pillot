@@ -9,7 +9,7 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @State private var confirmDisconnect = false
     @State private var code = ""
-    @State private var badCode = false
+    @State private var connectionIssue: String?
     @State private var exporting: BackupDocument?
     @State private var importing = false
     @State private var pendingRestore: Backup?
@@ -128,7 +128,9 @@ struct SettingsView: View {
             }
             .alert(L("Khôi phục bản sao lưu?", "Restore this backup?"), isPresented: Binding(get: { pendingRestore != nil }, set: { if !$0 { pendingRestore = nil } }),
                    presenting: pendingRestore) { backup in
-                Button(L("Thay bằng bản sao lưu", "Replace with the backup"), role: .destructive) { model.restore(backup) }
+                Button(L("Thay bằng bản sao lưu", "Replace with the backup"), role: .destructive) {
+                    if !model.restore(backup) { backupIssue = model.dataIssue }
+                }
                 Button(L("Huỷ", "Cancel"), role: .cancel) {}
             } message: { backup in
                 let when = backup.createdAt == .distantPast ? "" : L(" ngày \(TodayText.dayTitle(backup.createdAt))", " from \(TodayText.dayTitle(backup.createdAt))")
@@ -163,12 +165,18 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button(L("Kết nối", "Connect")) {
-                    Task { badCode = !(await model.connect(code: code)) }
+                    do {
+                        try model.connect(code: code)
+                        code = ""
+                        connectionIssue = nil
+                    } catch {
+                        connectionIssue = error.localizedDescription
+                    }
                 }
                 .buttonStyle(NeoButtonStyle(fill: Palette.sky, large: false))
                 .disabled(code.isEmpty)
-                if badCode {
-                    Callout(text: L("Mã không đúng dạng. Mã bắt đầu bằng https:// và có dấu #.", "Invalid code. It starts with https:// and contains #."), icon: "xmark.octagon.fill")
+                if let connectionIssue {
+                    Callout(text: connectionIssue, icon: "xmark.octagon.fill")
                 }
             }
         }

@@ -49,6 +49,23 @@ import Testing
         #expect(alerts.first?.title == "Tới giờ uống thuốc. Còn 5 viên, nhớ mua thêm")
         #expect(alerts.first?.body == "Hạn chót 23:00 giờ VN.")
     }
+
+    @Test func groupedAlertIdentifiesEachDoseAndRefreshesWhenOneMoves() throws {
+        let at = vn(2026, 10, 2, 21)
+        let a = MedicationReminders(id: UUID(), name: "A", events: [
+            ReminderEvent(date: at, kind: .deadline, requiresSound: true, dueAt: at, deadlineAt: at),
+        ], refillMessage: nil, missedCount: 0)
+        let earlier = at.addingTimeInterval(-hour)
+        var b = MedicationReminders(id: UUID(), name: "B", events: [
+            ReminderEvent(date: at, kind: .deadline, requiresSound: true, dueAt: earlier, deadlineAt: at),
+        ], refillMessage: nil, missedCount: 0)
+        let before = try #require(AlertPlanner.alerts(for: [a, b], vibrateOnly: false).first)
+        #expect(before.dosesDueAt == [a.id: at, b.id: earlier])
+
+        b.events[0].dueAt = earlier.addingTimeInterval(5 * minute)
+        let after = try #require(AlertPlanner.alerts(for: [a, b], vibrateOnly: false).first)
+        #expect(before.key(snoozeMinutes: 9, language: .vi) != after.key(snoozeMinutes: 9, language: .vi))
+    }
 }
 
 @Suite struct EnglishTextTests {

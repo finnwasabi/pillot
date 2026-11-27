@@ -27,12 +27,21 @@ public struct PlanStore: Sendable {
         try JSONEncoder().encode(Stored(version: currentVersion, medications: medications))
     }
 
+    static func isValidMedicationList(_ medications: [Medication]) -> Bool {
+        medications.count <= Medication.limit && Set(medications.map(\.id)).count == medications.count
+    }
+
     /// Loads the saved medications. Without a file there are none yet.
     /// Version 1 becomes one medication with an empty name, which the app fills in its language.
     /// A corrupt file or an unknown version throws instead of silently wiping history.
     public func load() throws -> [Medication] {
-        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        return try Self.decode(Data(contentsOf: url))
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return []
+        }
+        return try Self.decode(data)
     }
 
     /// Reads the stored format, version 1 or 2.
@@ -43,7 +52,11 @@ public struct PlanStore: Sendable {
             let old = try decoder.decode(StoredV1.self, from: data)
             return [Medication(name: "", settings: old.settings, history: old.history)]
         case 2:
-            return try decoder.decode(Stored.self, from: data).medications
+            let medications = try decoder.decode(Stored.self, from: data).medications
+            guard isValidMedicationList(medications) else {
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSDebugDescriptionErrorKey: "too many medications or duplicate IDs"])
+            }
+            return medications
         case let version:
             throw CocoaError(.fileReadCorruptFile, userInfo: [NSDebugDescriptionErrorKey: "unknown version \(version)"])
         }

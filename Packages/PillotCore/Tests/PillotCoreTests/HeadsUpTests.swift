@@ -36,4 +36,30 @@ import Testing
         #expect(all.filter { !$0.usesAlarm }.count <= AlertPlanner.notificationLimit)
         #expect(all.map(\.date) == all.map(\.date).sorted())
     }
+
+    @Test func headsUpsLeaveRoomForDoseNotifications() {
+        let events = (1...AlertPlanner.notificationLimit).map { index in
+            let due = now.addingTimeInterval(TimeInterval(index) * hour)
+            return ReminderEvent(date: due, kind: .deadline, requiresSound: true, dueAt: due, deadlineAt: due)
+        }
+        let med = MedicationReminders(id: UUID(), name: "Iron", events: events, refillMessage: nil, missedCount: 0)
+        let alerts = AlertPlanner.alerts(for: [med], vibrateOnly: false, alarmsAvailable: false, headsUp: 10 * minute, now: now)
+
+        #expect(alerts.map(\.date) == events.map(\.date))
+        #expect(alerts.allSatisfy { !$0.quiet })
+    }
+
+    @Test func headsUpInThePastDoesNotUseNotificationBudget() {
+        let dueNow = now.addingTimeInterval(5 * minute)
+        let events = (0...AlertPlanner.notificationLimit).map { index in
+            let due = dueNow.addingTimeInterval(TimeInterval(index) * hour)
+            return ReminderEvent(date: due, kind: .deadline, requiresSound: true, dueAt: due, deadlineAt: due)
+        }
+        let med = MedicationReminders(id: UUID(), name: "Iron", events: events, refillMessage: nil, missedCount: 0)
+        let headsUps = AlertPlanner.alerts(for: [med], vibrateOnly: false, headsUp: 10 * minute, now: now).filter(\.quiet)
+
+        #expect(headsUps.count == AlertPlanner.notificationLimit)
+        #expect(headsUps.first?.dosesDueAt == [med.id: events[1].dueAt])
+        #expect(headsUps.last?.dosesDueAt == [med.id: events.last!.dueAt])
+    }
 }
