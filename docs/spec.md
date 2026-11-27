@@ -20,12 +20,16 @@ The reference for the reminder logic and the data contract between the app and t
   color, an icon, its own schedule, pill count, pauses and history. Everything below applies to each medication on its own.
 - A fresh install has no medications. Data from 0.1.x (a single schedule) becomes one medication named "Daily pill".
 - Medications reminded at the same moment share one alert: one alarm rings, its title names them all ("Vitamin D,
-  Iron"), and "Taken" marks all of them. Taking one medication never stops another one's ringing or snoozed alarm.
+  Iron"), and "Taken" covers the pending doses in that alert. Taking one medication leaves unrelated alarms active.
+  If it silences a shared alarm, future reminders for the remaining medications stay scheduled.
 
 ## Schedule and maximum gap
 
 - The user sets a **main time** in Vietnam time (for example 21:00) and **doses per day**: 1, 2, 3, 4 or 6, evenly
   spaced. The **period** is 24 hours divided by the doses per day; with 2 doses from 08:00 they fall at 08:00 and 20:00.
+- The first dose is anchored when a medication is added. It stays pending when its scheduled time arrives.
+- A course includes its last Vietnam calendar day. Its final dose can still ring until the course ends at midnight.
+  If its late window would run past midnight, the pending dose resolves at the end of the course.
 - **Maximum gap** between two consecutive doses: one period by default, adjustable from one period up to one and a half
   (24 to 36 hours for a daily medication).
 - Next deadline = previous dose + maximum gap.
@@ -66,8 +70,8 @@ The reference for the reminder logic and the data contract between the app and t
   app preferences. The connection code is left out. Restoring replaces everything on the phone after a confirmation.
   The app's own data file is accepted too.
 - **Widget and Shortcut:** the data file lives in an App Group so the widget can read it (SideStore renames the group
-  and lists the real name in `ALTAppGroups`). The widget is read only. The "I took my meds" App Shortcut marks every
-  medication due now, in the app's process, which also reschedules the alarms.
+  and lists the real name in `ALTAppGroups`). A widget or alert's "Taken" action applies to the dose it was created for.
+  The "I took my meds" App Shortcut marks every medication due now. Both save and reschedule in the app's process.
 
 ## Statuses
 
@@ -143,8 +147,10 @@ newest `updatedAt` and answers older ones with 200 and `"stale": true`. Every re
 - Times are UTC ISO 8601 without fractional seconds. `pillsTotal` and `pillsRemaining` are `null` when not counting.
   `lastTakenAt`, `pausedUntil` and `name` may be `null`. `name` is the user's name from the app, so the bot can use it.
 - `missedCount` counts every miss, including made-up ones. `madeUpCount` counts the made-up ones.
-- At most 30 medications per snapshot. `skippedCount` was added in 0.3.0 and may be missing. `asNeeded` (taken when needed: no schedule, `nextDueAt` and `deadlineAt` are far in the future and mean nothing), `courseEnded` (past the last day of a course; `pausedUntil` is then null), `pillsPerDose` and `takenToday` were added in 0.5.0 and may be missing. `pausedUntil` also covers
-  days off in a cycle.
+- At most 30 medications per snapshot. `skippedCount` was added in 0.3.0 and may be missing. The server ignores `nextDueAt`
+  and `deadlineAt` for `asNeeded` medications and when `courseEnded` is true. A course ends after its last day or when it
+  runs out of scheduled doses. `pausedUntil` is then null. `asNeeded`, `courseEnded`, `pillsPerDose` and `takenToday`
+  were added in 0.5.0 and may be missing. `pausedUntil` also covers days off in a cycle.
 - Version 1 (0.1.x: the fields of one medication at the top level, with `daysTaken` instead of `takenCount` and no `id`,
   `name` or `dosesPerDay`) is still accepted and stored as version 2 with one medication.
 - `GET /v1/snapshot` (same token) returns the latest snapshot as version 2, or 404 when there is none.
@@ -159,6 +165,8 @@ newest `updatedAt` and answers older ones with 200 and `"stale": true`. Every re
   offline. This compares the snapshot's own times; the server still decides nothing about the schedule.
 - A 09:00 Vietnam time report every day with one block per medication: last dose, next dose, taken, late, missed, made
   up, pills left, and the last sync. Snapshots older than 24 hours are flagged as not synced since then.
+- Status reports paginate when the medication list exceeds Telegram's message limit. Reports and deadline nudges retry
+  on the next tick if sending fails.
 - Commands: `/check` (latest status, with a Refresh button), `/msg <text>` (the note shown in the app; without text it
   shows the current note), `/clearmsg`, `/link` (the connection code, with a Copy button), `/help`, `/start`.
 - Bot texts are English, sent as Telegram HTML with names escaped.

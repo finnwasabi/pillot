@@ -146,7 +146,7 @@ public struct Planner: Sendable {
     }
 
     /// When the days off end, if `now` is on one.
-    public func cycleBreakUntil(now: Date) -> Date? { settings.cycle?.breakEnd(after: now) }
+    public func cycleBreakUntil(now: Date) -> Date? { settings.asNeeded ? nil : settings.cycle?.breakEnd(after: now) }
 
     /// When reminders start again, if they are paused or `now` is on a day off.
     public func restingUntil(now: Date) -> Date? {
@@ -200,8 +200,10 @@ public struct Planner: Sendable {
             let distance = { (record: DoseRecord) in record.makesUpFor.map { abs($0.timeIntervalSince(missedAt)) } ?? .infinity }
             guard let k = unused.indices.min(by: { distance(unused[$0]) < distance(unused[$1]) }),
                   distance(unused[k]) < halfPeriod else { continue }
+            let day = records[i].day
             records[i] = unused.remove(at: k)
             records[i].scheduledAt = missedAt
+            records[i].day = day
             matched += 1
         }
         records += unused
@@ -219,6 +221,7 @@ public struct Planner: Sendable {
     public func day(of record: DoseRecord) -> Date {
         if let day = record.day { return day }
         let moment = [.madeUp, .late, .skipped].contains(record.status) ? record.scheduledAt : (record.takenAt ?? record.scheduledAt)
+        if settings.asNeeded { return VietnamClock.startOfDay(moment) }
         return VietnamClock.startOfDay(firstSlot(after: moment.addingTimeInterval(-halfPeriod)))
     }
 
@@ -230,7 +233,7 @@ public struct Planner: Sendable {
             result[day] = record.status
         }
         // Days off since the first record show as paused.
-        if let cycle = settings.cycle, let first = history.compactMap({ $0.takenAt }).min() {
+        if !settings.asNeeded, let cycle = settings.cycle, let first = history.compactMap({ $0.takenAt }).min() {
             var day = VietnamClock.startOfDay(first)
             while day <= now {
                 if result[day] == nil, cycle.isBreak(day) { result[day] = .paused }
@@ -254,18 +257,19 @@ public struct Planner: Sendable {
     func events(from pending: Dose, now: Date, horizonDays: Int, cadence: TimeInterval?) -> [ReminderEvent] {
         if settings.asNeeded { return [] }
         let end = now.addingTimeInterval(TimeInterval(horizonDays) * VietnamClock.day)
+        let courseEnd = settings.courseEnd ?? .distantFuture
         var dose = pending
         var byDate: [Date: ReminderEvent] = [:]
         var isPending = true
-        while dose.dueAt <= end {
+        while dose.dueAt <= end && dose.slotAt < courseEnd {
             if let pause = overlappingPause(dose, startedBy: .distantFuture) {
                 dose = doseAfterPause(pause.end)
                 continue
             }
             let planned = isPending ? chain(for: dose, cadence: cadence) : mainAndDeadline(for: dose)
             isPending = false
-            for event in planned where event.date > now && event.date <= end {
-                if pauses.contains(where: { $0.contains(event.date) }) { continue }
+            for event in planned where event.date > now && event.date <= end && event.date < courseEnd {
+                if settings.pauses.contains(where: { $0.contains(event.date) }) { continue }
                 if let existing = byDate[event.date], priority(existing.kind) >= priority(event.kind) { continue }
                 byDate[event.date] = event
             }
@@ -450,26 +454,40 @@ public struct Planner: Sendable {
 
     /// `events` must be `resolutions(upTo: now)`.
     private func walk(_ events: [DoseRecord], now: Date) -> WalkState {
+        let since = settings.scheduleSince ?? .distantPast
+        let frozen = Set(archive.map(\.id))
+        var state: WalkState
         if settings.asNeeded {
             // No schedule: every take is just a take, nothing is pending, nothing is missed.
             let far = Date.distantFuture
-            return WalkState(dose: Dose(slotAt: far, dueAt: far, deadlineAt: far, lateUntil: far, exceedsMaxInterval: false, anchor: far),
-                             records: events.filter { $0.status == .taken })
+            let records = events.filter { $0.status == .taken && $0.takenAt! >= since }.map { take in
+                var record = take
+                record.day = VietnamClock.startOfDay(take.takenAt!)
+                return record
+            }
+            state = WalkState(dose: doseFromMainTime(far), records: records)
+        } else if let scheduleSince = settings.scheduleSince {
+            // Keep the last take or skip as the anchor for the new schedule. Resolutions before the change are frozen.
+            let start = events.last(where: { $0.takenAt! < scheduleSince })?.takenAt ?? scheduleSince
+            state = walkLive(events.filter { $0.takenAt! >= start }, now: now, since: scheduleSince)
+        } else {
+            return walkLive(events, now: now)
         }
-        guard let since = settings.scheduleSince else { return walkLive(events, now: now) }
-        // The live walk starts at the last take or skip before the change, so the next dose still follows from it.
-        let start = events.last(where: { $0.takenAt! < since })?.takenAt ?? since
-        var state = walkLive(events.filter { $0.takenAt! >= start }, now: now)
-        let frozen = Set(archive.map(\.id))
-        state.records = archive + state.records.filter { !frozen.contains($0.id) && ($0.takenAt ?? $0.scheduledAt) >= start }
+        state.records = archive + state.records.filter { !frozen.contains($0.id) }
         state.missed = state.records.count(where: { $0.status == .missed })
         state.late = state.records.count(where: { $0.status == .late })
         state.skipped = state.records.count(where: { $0.status == .skipped })
         return state
     }
 
-    private func walkLive(_ events: [DoseRecord], now: Date) -> WalkState {
+    private func walkLive(_ events: [DoseRecord], now: Date, since: Date? = nil) -> WalkState {
         var state: WalkState?
+        if let since, events.first.map({ $0.takenAt! >= since }) ?? true {
+            // With no earlier take, the first planned dose stays pending when its reminder time arrives.
+            state = WalkState(dose: doseFromMainTime(activeSlot(firstSlot(after: since))))
+        }
+        let courseEnd = settings.courseEnd
+        let recordingSince = since ?? .distantPast
         for event in events {
             let t = event.takenAt!
             // `take()` moves the state out: `guard var current = state` left a second reference to `records`, so every
@@ -486,17 +504,17 @@ public struct Planner: Sendable {
                 state = fresh
                 continue
             }
-            advance(&current, before: t)
+            advance(&current, before: t, recordingSince: recordingSince, courseEnd: courseEnd)
             apply(event, to: &current)
             state = current
         }
         guard var final = state.take() else {
             // No history yet: the first dose is the next dose time after `now`.
             var fresh = WalkState(dose: doseFromMainTime(activeSlot(firstSlot(after: now))))
-            advance(&fresh, before: now)
+            advance(&fresh, before: now, recordingSince: recordingSince, courseEnd: courseEnd)
             return fresh
         }
-        advance(&final, before: now)
+        advance(&final, before: now, recordingSince: recordingSince, courseEnd: courseEnd)
         return final
     }
 
@@ -523,16 +541,24 @@ public struct Planner: Sendable {
     }
 
     /// Skips doses inside pauses and counts doses whose late window ended before `t`.
-    private func advance(_ state: inout WalkState, before t: Date) {
+    private func advance(_ state: inout WalkState, before t: Date, recordingSince: Date, courseEnd: Date?) {
         while true {
+            if let courseEnd, state.dose.slotAt >= courseEnd {
+                state.dose = doseFromMainTime(.distantFuture)
+                state.followsTake = false
+                return
+            }
             if let pause = overlappingPause(state.dose, startedBy: t) {
-                // After the end of a course there is no dose at all, not a paused one, so the calendar stays blank.
-                if pause.end != .distantFuture { state.records.append(DoseRecord(derived: state.dose.dueAt, status: .paused)) }
+                if max(state.dose.dueAt, pause.start) >= recordingSince {
+                    state.records.append(DoseRecord(derived: state.dose.dueAt, status: .paused))
+                }
                 state.dose = doseAfterPause(pause.end)
                 state.followsTake = false
-            } else if state.dose.lateUntil < t {
-                state.missed += 1
-                state.records.append(DoseRecord(derived: state.dose.dueAt, status: .missed))
+            } else if state.dose.lateUntil < t || courseEnd.map({ $0 <= t }) == true {
+                if min(state.dose.lateUntil, courseEnd ?? .distantFuture) >= recordingSince {
+                    state.missed += 1
+                    state.records.append(DoseRecord(derived: state.dose.dueAt, status: .missed))
+                }
                 state.dose = doseAfterMiss(state.dose)
                 state.followsTake = false
             } else {
@@ -541,14 +567,8 @@ public struct Planner: Sendable {
         }
     }
 
-    /// The pauses, plus everything after the end of a course.
-    private var pauses: [PausePeriod] {
-        guard let end = settings.courseEnd else { return settings.pauses }
-        return settings.pauses + [PausePeriod(start: end, end: .distantFuture)]
-    }
-
     private func overlappingPause(_ dose: Dose, startedBy t: Date) -> PausePeriod? {
-        pauses.first { $0.start <= t && $0.start < $0.end && dose.dueAt < $0.end && dose.lateUntil >= $0.start }
+        settings.pauses.first { $0.start <= t && $0.start < $0.end && dose.dueAt < $0.end && dose.lateUntil >= $0.start }
     }
 
     private var maxInterval: TimeInterval { max(60, settings.maxInterval) }
@@ -583,12 +603,14 @@ public struct Planner: Sendable {
         let t = take.takenAt!
         let slot = firstSlot(after: t.addingTimeInterval(halfPeriod))
         // The next dose falls after days off: start fresh there, like after a pause.
-        if activeSlot(slot) != slot { return doseFromMainTime(activeSlot(slot)) }
+        let active = activeSlot(slot)
+        if active != slot { return doseFromMainTime(active) }
         guard take.nextAtMainTime else { return dose(slot: slot, anchor: t) }
         // Realigned (back to the main time, or the schedule changed): the next dose time at least a quarter period after
         // the take, so moving the time earlier takes effect on the next dose instead of being swallowed by the half rule.
         let aligned = firstSlot(after: t.addingTimeInterval(period / 4))
-        if activeSlot(aligned) != aligned { return doseFromMainTime(activeSlot(aligned)) }
+        let alignedActive = activeSlot(aligned)
+        if alignedActive != aligned { return doseFromMainTime(alignedActive) }
         let normalDeadline = t.addingTimeInterval(maxInterval)
         let deadline = max(aligned, normalDeadline)
         return Dose(slotAt: aligned, dueAt: aligned, deadlineAt: deadline, lateUntil: deadline.addingTimeInterval(lateWindow),
@@ -601,7 +623,8 @@ public struct Planner: Sendable {
         let anchor = min(previous.deadlineAt, previous.slotAt.addingTimeInterval(halfPeriod))
         var slot = previous.slotAt.addingTimeInterval(period)
         while slot <= previous.deadlineAt { slot = slot.addingTimeInterval(period) }
-        if activeSlot(slot) != slot { return doseFromMainTime(activeSlot(slot)) }
+        let active = activeSlot(slot)
+        if active != slot { return doseFromMainTime(active) }
         return dose(slot: slot, anchor: anchor)
     }
 
@@ -613,13 +636,8 @@ public struct Planner: Sendable {
 
     /// `slot`, or the first dose time after the days off it falls on.
     func activeSlot(_ slot: Date) -> Date {
-        guard let cycle = settings.cycle else { return slot }
-        var slot = slot
-        // Bounded: at most every slot of one stretch of days off.
-        for _ in 0...(cycle.breakDays * settings.dosesPerDay + 1) where cycle.isBreak(slot) {
-            slot = slot.addingTimeInterval(period)
-        }
-        return slot
+        guard let breakEnd = settings.cycle?.breakEnd(after: slot) else { return slot }
+        return firstSlot(atOrAfter: breakEnd)
     }
 
     /// After a pause: the next dose starts from the first dose time at or after the pause ends.

@@ -166,6 +166,8 @@ public struct MedicationSnapshot: Codable, Equatable, Sendable {
 extension Medication {
     public func snapshot(now: Date) -> MedicationSnapshot {
         let summary = planner.summary(now: now)
+        let courseEnded = settings.courseEnded(now: now) ||
+            (settings.courseEnd != nil && summary.dose.slotAt == .distantFuture && summary.restingUntil == nil)
         return MedicationSnapshot(
             id: id,
             name: name,
@@ -182,9 +184,9 @@ extension Medication {
             pillsRemaining: settings.pills?.remaining,
             refillReminder: settings.refillReminder,
             // A finished course rests "forever"; the server gets `courseEnded` instead of a date in the year 4001.
-            pausedUntil: settings.courseEnded(now: now) ? nil : summary.restingUntil,
+            pausedUntil: courseEnded ? nil : summary.restingUntil,
             asNeeded: settings.asNeeded,
-            courseEnded: settings.courseEnded(now: now),
+            courseEnded: courseEnded,
             pillsPerDose: settings.pillsPerDose,
             takenToday: planner.takenToday(now: now)
         )

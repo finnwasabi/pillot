@@ -10,6 +10,8 @@ public struct PlannedAlert: Equatable, Sendable {
     public var body: String
     /// The medications this alert is for. "Taken" on the alert marks all of them.
     public var medicationIDs: [UUID]
+    /// Identifies which pending dose each "Taken" action can resolve.
+    public var dosesDueAt: [UUID: Date]
     /// Their names, for the lock screen countdown.
     public var names: String
     /// A notification without sound: the heads-up before the dose time.
@@ -56,45 +58,31 @@ public enum AlertPlanner {
     /// `vibrateOnly`: reminders are plain notifications, but from the deadline on they are always ringing alarms.
     /// `alarmsAvailable` false (no AlarmKit permission): everything becomes a notification so reminders still happen.
     /// `headsUp`: a quiet notification this long before each dose time, for someone holding the phone; 0 means none.
-    /// Only the earliest alerts within the limits are kept; the app refills on every launch and every "Taken".
+    /// Dose reminders get the notification budget first. Heads-ups use any slots left over.
+    /// `now`: when supplied, do not allocate a slot to a notification that is too late to schedule.
     public static func alerts(
         for medications: [MedicationReminders], vibrateOnly: Bool, alarmsAvailable: Bool = true, language: Language = .vi,
-        headsUp: TimeInterval = 0
+        headsUp: TimeInterval = 0, now: Date? = nil
     ) -> [PlannedAlert] {
         var byDate: [Date: [(medication: MedicationReminders, event: ReminderEvent)]] = [:]
-        var headsUpByDate: [Date: [MedicationReminders]] = [:]
         for medication in medications {
             for event in medication.events {
                 byDate[event.date, default: []].append((medication, event))
-                // The first ring of a dose. Its kind is not enough: with the default gap the dose time is also the deadline.
-                if headsUp > 0, event.date == event.dueAt {
-                    headsUpByDate[event.date.addingTimeInterval(-headsUp), default: []].append(medication)
-                }
             }
         }
+        let firstNotification = now ?? .distantPast
         var notifications = 0, alarms = 0
         var result: [PlannedAlert] = []
-        for date in Set(byDate.keys).union(headsUpByDate.keys).sorted() {
-            if let soon = headsUpByDate[date], notifications < notificationLimit {
-                notifications += 1
-                let names = names(soon.map(\.name), language: language)
-                let minutes = Int(headsUp / 60)
-                let at = TimeFormatting.vietnamTime(date.addingTimeInterval(headsUp), language: language)
-                // A short title on one line; what and when go in the body, which wraps.
-                result.append(PlannedAlert(
-                    date: date, usesAlarm: false,
-                    title: language == .en ? "\(minutes) min to go" : "Còn \(minutes) phút nữa",
-                    body: language == .en ? "\(names), take at \(at).\nTaking it a little early is fine." : "\(names), uống lúc \(at).\nUống sớm một chút cũng được.",
-                    medicationIDs: soon.map(\.id), names: names, quiet: true))
-            }
-            guard let group = byDate[date] else { continue }
+        let dates = byDate.keys.sorted()
+        for date in dates {
+            let group = byDate[date]!
             let event = group.map(\.event).max { priority($0.kind) < priority($1.kind) }!
             let usesAlarm = alarmsAvailable && (!vibrateOnly || group.contains { $0.event.requiresSound })
             if usesAlarm {
                 guard alarms < alarmLimit else { continue }
                 alarms += 1
             } else {
-                guard notifications < notificationLimit else { continue }
+                guard date > firstNotification, notifications < notificationLimit else { continue }
                 notifications += 1
             }
             let names = names(group.map(\.medication.name), language: language)
@@ -107,9 +95,32 @@ public enum AlertPlanner {
             }
             let deadline = TimeFormatting.vietnamTime(group.map(\.event.deadlineAt).min()!, language: language)
             let body = language == .en ? "Deadline \(deadline)." : "Hạn chót \(deadline)."
+            let doses = Dictionary(group.map { ($0.medication.id, $0.event.dueAt) }, uniquingKeysWith: min)
             result.append(PlannedAlert(date: date, usesAlarm: usesAlarm, title: title, body: body,
-                                       medicationIDs: group.map(\.medication.id), names: names))
+                                       medicationIDs: group.map(\.medication.id), dosesDueAt: doses, names: names))
         }
+
+        guard headsUp > 0, notifications < notificationLimit else { return result }
+        let minutes = Int(headsUp / 60)
+        for dueAt in dates {
+            let date = dueAt.addingTimeInterval(-headsUp)
+            guard date > firstNotification else { continue }
+            // A deadline can also be the first ring of a dose.
+            let soon = byDate[dueAt]!.filter { $0.event.dueAt == dueAt }.map(\.medication)
+            guard !soon.isEmpty else { continue }
+            let names = names(soon.map(\.name), language: language)
+            let at = TimeFormatting.vietnamTime(dueAt, language: language)
+            result.append(PlannedAlert(
+                date: date, usesAlarm: false,
+                title: language == .en ? "\(minutes) min to go" : "Còn \(minutes) phút nữa",
+                body: language == .en ? "\(names), take at \(at)." : "\(names), uống lúc \(at).",
+                medicationIDs: soon.map(\.id), dosesDueAt: Dictionary(soon.map { ($0.id, dueAt) }, uniquingKeysWith: min),
+                names: names, quiet: true))
+            notifications += 1
+            if notifications == notificationLimit { break }
+        }
+        // Keep the original delivery order, including the heads-up first when two alerts share a time.
+        result.sort { ($0.date, !$0.quiet ? 1 : 0) < ($1.date, !$1.quiet ? 1 : 0) }
         return result
     }
 
@@ -183,8 +194,9 @@ extension PlannedAlert {
     /// is left alone, so a change to one medication no longer cancels and reschedules every alert (0.3.5 redid up to 300
     /// alarms, about 2 seconds, after each change).
     public func key(snoozeMinutes: Int, language: Language) -> String {
-        let ids = medicationIDs.map(\.uuidString).sorted().joined(separator: ",")
-        return "\(Int(date.timeIntervalSince1970.rounded()))|\(usesAlarm ? "alarm" : "note")|\(ids)|\(snoozeMinutes)|\(language.rawValue)|\(title)|\(body)"
+        let doses = dosesDueAt.map { "\($0.key.uuidString):\($0.value.timeIntervalSinceReferenceDate)" }.sorted().joined(separator: ",")
+        let kind = usesAlarm ? "alarm" : quiet ? "quiet" : "note"
+        return "\(Int(date.timeIntervalSince1970.rounded()))|\(kind)|\(doses)|\(snoozeMinutes)|\(language.rawValue)|\(title)|\(body)"
     }
 }
 

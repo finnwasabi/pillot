@@ -73,6 +73,12 @@ import Testing
         #expect(cycle.breakEnd(after: vn(2026, 10, 25, 9)) == vn(2026, 10, 29, 0))
     }
 
+    @Test func resumesAtMidnightWhenItIsTheFirstDoseAfterTheBreak() {
+        let cycle = DoseCycle(activeDays: 1, breakDays: 30, startDay: vn(2026, 10, 1, 0))
+        let planner = Planner(settings: ReminderSettings(mainHour: 0, dosesPerDay: 6, cycle: cycle))
+        #expect(planner.nextReminder(now: vn(2026, 10, 2, 12)) == vn(2026, 11, 1, 0))
+    }
+
     @Test func noRemindersAndNoMissesOnDaysOff() {
         var planner = planner()
         for day in 1...21 { planner.markTaken(at: vn(2026, 10, day, 21)) }
@@ -124,9 +130,32 @@ import Testing
         #expect(try Backup.read(Data(old.utf8)).createdAt == vn(2026, 10, 30, 9))
     }
 
+    @Test func backupWithDuplicateMedicationIDsIsUnreadable() throws {
+        let medication = Medication(name: "Iron")
+        let file = try Backup(createdAt: vn(2026, 10, 30, 9), medications: [medication, medication]).data()
+        #expect(throws: Backup.Failure.unreadable) { try Backup.read(file) }
+    }
+
+    @Test func backupsOverTheMedicationLimitAreRefused() throws {
+        let medications = (0...Medication.limit).map { Medication(name: "Medication \($0)") }
+        let file = try Backup(createdAt: vn(2026, 10, 30, 9), medications: medications).data()
+        #expect(throws: Backup.Failure.unreadable) { try Backup.read(file) }
+        let state = try PlanStore.encode(medications)
+        #expect(throws: Backup.Failure.unreadable) { try Backup.read(state) }
+    }
+
+    @Test func backupWithInvalidCycleLengthsIsUnreadable() throws {
+        let file = #"{"format":"pillot-backup","version":1,"createdAt":"2026-10-30T02:00:00Z","medications":[{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","settings":{"cycle":{"activeDays":0,"breakDays":0,"startDay":0}}}]}"#
+        #expect(throws: Backup.Failure.unreadable) { try Backup.read(Data(file.utf8)) }
+    }
+
     @Test func junkAndNewerBackupsAreRefused() throws {
         #expect(throws: Backup.Failure.unreadable) { try Backup.read(Data("hello".utf8)) }
         let newer = #"{"format":"pillot-backup","version":9,"createdAt":"2026-10-30T02:00:00Z","medications":[]}"#
         #expect(throws: Backup.Failure.tooNew(9)) { try Backup.read(Data(newer.utf8)) }
+        let newerShape = #"{"format":"pillot-backup","version":9,"payload":{}}"#
+        #expect(throws: Backup.Failure.tooNew(9)) { try Backup.read(Data(newerShape.utf8)) }
+        let unknownFormat = #"{"format":"foreign-backup","version":2,"medications":[]}"#
+        #expect(throws: Backup.Failure.unreadable) { try Backup.read(Data(unknownFormat.utf8)) }
     }
 }
