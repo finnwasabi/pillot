@@ -9,7 +9,7 @@ struct ProfileView: View {
     @State private var name = ""
     @State private var partner = ""
     @State private var code = ""
-    @State private var badCode = false
+    @State private var connectionIssue: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -65,8 +65,8 @@ struct ProfileView: View {
             field(L("Mã kết nối partner gửi (nếu có)", "Connection code from your partner (if any)"), text: $code, limit: 500)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            if badCode {
-                Text(L("Mã không đúng dạng. Mã bắt đầu bằng https:// và có dấu #.", "Invalid code. It starts with https:// and contains #."))
+            if let connectionIssue {
+                Text(connectionIssue)
                     .font(.footnote)
                     .foregroundStyle(Palette.text)
             }
@@ -85,12 +85,12 @@ struct ProfileView: View {
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
         } else {
             Button(L("Lưu", "Save")) {
-                Task {
+                do {
+                    if !code.isEmpty { try model.connect(code: code) }
                     model.partnerName = partner.trimmingCharacters(in: .whitespaces)
-                    if !code.isEmpty {
-                        guard await model.connect(code: code) else { badCode = true; return }
-                    }
                     onFinish()
+                } catch {
+                    connectionIssue = error.localizedDescription
                 }
             }
             .buttonStyle(NeoButtonStyle())

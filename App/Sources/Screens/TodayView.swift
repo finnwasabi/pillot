@@ -5,8 +5,12 @@ struct TodayView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.editMedication) private var editMedication
     @State private var tapped = 0
-    /// The medication whose "skip this dose" waits for confirmation.
-    @State private var confirmSkip: Medication?
+    private struct SkipConfirmation {
+        let medicationID: UUID
+        let dueAt: Date
+        let nextAt: Date
+    }
+    @State private var confirmSkip: SkipConfirmation?
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// Side by side normally, stacked at accessibility text sizes so nothing overflows the screen.
@@ -114,11 +118,11 @@ struct TodayView: View {
     /// One tap for every medication due right now.
     @ViewBuilder
     private func dueAllButton(now: Date, summaries: [UUID: PlannerSummary]) -> some View {
-        let due = model.medications.filter { $0.settings.pausedUntil(now: now) == nil && now >= summaries[$0.id]!.dose.dueAt }
+        let due = model.dueDoses(now: now, using: summaries)
         if due.count > 1 {
             Button(L("Đã uống cả \(due.count) thuốc", "Took all \(due.count)")) {
                 tapped += 1
-                Task { await model.markTaken(due.map(\.id)) }
+                Task { await model.markTaken(dosesDueAt: due) }
             }
             .buttonStyle(NeoButtonStyle(fill: Palette.mint))
         }
@@ -141,7 +145,8 @@ struct TodayView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if medication.settings.courseEnded(now: now), let end = medication.settings.endDay {
+            if !medication.settings.asNeeded, let end = medication.settings.endDay,
+               medication.settings.courseEnded(now: now) || dose.dueAt == .distantFuture {
                 StatusPill(status: .paused)
                 Text(L("Đã xong liệu trình, ngày cuối là \(TodayText.dayTitle(end)). Muốn uống tiếp thì sửa ngày kết thúc trong tab Thuốc.",
                        "Course finished, the last day was \(TodayText.dayTitle(end)). To keep going, change the end date in the Meds tab."))
@@ -163,8 +168,8 @@ struct TodayView: View {
                     ? L("Còn \(TodayText.duration(dose.deadlineAt.timeIntervalSince(now))) tới hạn chót", "\(TodayText.duration(dose.deadlineAt.timeIntervalSince(now))) left until the deadline")
                     : L("Đã quá hạn chót \(TodayText.duration(now.timeIntervalSince(dose.deadlineAt))). Xem tờ hướng dẫn thuốc hoặc hỏi bác sĩ, dược sĩ.", "Past the deadline by \(TodayText.duration(now.timeIntervalSince(dose.deadlineAt))). Check the leaflet or ask a doctor or pharmacist."),
                     icon: "exclamationmark.triangle.fill", fill: now < dose.deadlineAt ? Palette.surfaceOnFill : Palette.coral)
-                takeButton(medication)
-                skipButton(medication)
+                takeButton(medication, dueAt: dose.dueAt)
+                skipButton(medication, dueAt: dose.dueAt)
             } else if let until = summary.cycleBreakUntil {
                 StatusPill(status: .paused)
                 Text(L("Hôm nay là ngày nghỉ theo chu kỳ. Uống lại từ \(TodayText.relativeDay(until, from: now)), lúc \(TimeFormatting.vn(dose.dueAt)).",
@@ -195,15 +200,15 @@ struct TodayView: View {
                     .font(.headline.weight(.heavy))
                     .foregroundStyle(Palette.onFillSecondary)
                 realignButton(medication, summary)
-                takeButton(medication)
+                takeButton(medication, dueAt: dose.dueAt)
                 if let skip = summary.undoableSkip {
                     Button(L("Hoàn tác bỏ qua", "Undo skip")) { model.update(medication.id) { $0.planner.removeRecord(id: skip.id) } }
                         .buttonStyle(ChipButtonStyle(fill: Palette.surfaceOnFill))
                 } else {
-                    Text(L("Uống sớm cũng được, lần sau sẽ nhắc sớm theo.", "Taking it early is fine, the next reminder moves earlier too."))
+                    Text(L("Ghi nhận lần uống sớm có thể đổi giờ nhắc tiếp theo.", "Logging a dose early can change the next reminder time."))
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(Palette.onFillSecondary)
-                    skipButton(medication)
+                    skipButton(medication, dueAt: dose.dueAt)
                 }
             }
             if let pills = medication.settings.pills { pillsRow(pills, refill: medication.settings.refillReminder) }
@@ -239,28 +244,36 @@ struct TodayView: View {
         takeButton(medication)
     }
 
-    private func takeButton(_ medication: Medication) -> some View {
+    private func takeButton(_ medication: Medication, dueAt: Date? = nil) -> some View {
         Button(L("Đã uống", "Taken")) {
             tapped += 1
-            Task { await model.markTaken([medication.id]) }
+            Task {
+                if let dueAt {
+                    await model.markTaken(dosesDueAt: [medication.id: dueAt])
+                } else {
+                    await model.markTaken([medication.id])
+                }
+            }
         }
         .buttonStyle(NeoButtonStyle(fill: Palette.surfaceOnFill))
         .accessibilityLabel(L("Đã uống \(medication.name)", "Taken \(medication.name)"))
     }
 
-    private func skipButton(_ medication: Medication) -> some View {
-        Button { confirmSkip = medication } label: {
+    private func skipButton(_ medication: Medication, dueAt: Date) -> some View {
+        Button {
+            confirmSkip = SkipConfirmation(medicationID: medication.id, dueAt: dueAt, nextAt: medication.planner.skippingPreview(now: .now))
+        } label: {
             Label(L("Bỏ qua lần này", "Skip this dose"), systemImage: "forward.end")
         }
         .buttonStyle(ChipButtonStyle(fill: Palette.surfaceOnFill))
         // On the button: since iOS 26 the dialog is a popover from the view it is attached to, and from the screen it opened
         // off to the side. The card keeps its identity across the minute redraws, so the dialog stays up.
         .confirmationDialog(L("Bỏ qua lần uống này?", "Skip this dose?"),
-                            isPresented: Binding(get: { confirmSkip?.id == medication.id }, set: { if !$0 { confirmSkip = nil } }),
-                            titleVisibility: .visible) {
-            Button(L("Bỏ qua lần này", "Skip this dose")) { model.skip(medication.id) }
-        } message: {
-            let next = medication.planner.skippingPreview(now: .now)
+                            isPresented: Binding(get: { confirmSkip?.medicationID == medication.id }, set: { if !$0 { confirmSkip = nil } }),
+                            titleVisibility: .visible, presenting: confirmSkip) { confirmation in
+            Button(L("Bỏ qua lần này", "Skip this dose")) { model.skip(confirmation.medicationID, dueAt: confirmation.dueAt) }
+        } message: { confirmation in
+            let next = confirmation.nextAt
             Text(L("\(medication.name) thôi nhắc lần này, không tính là hụt và không trừ viên. Lần tới: \(TodayText.relativeDay(next, from: .now)) \(TimeFormatting.vn(next)). Có nên bỏ hay không: hỏi bác sĩ, dược sĩ.",
                    "No more reminders for this dose of \(medication.name). It does not count as missed and uses no pill. Next: \(TodayText.relativeDay(next, from: .now)) \(TimeFormatting.vn(next)). Whether to skip is a question for your doctor or pharmacist."))
         }

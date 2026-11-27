@@ -28,6 +28,11 @@ public struct Backup: Equatable, Sendable {
         var preferences: [String: String]?
     }
 
+    private struct Header: Decodable {
+        var format: String?
+        var version: Int
+    }
+
     public enum Failure: Error, Equatable {
         /// Not a backup and not app data.
         case unreadable
@@ -44,8 +49,14 @@ public struct Backup: Equatable, Sendable {
 
     /// Reads a backup file, or the app's own data file (`state.json`, version 1 or 2) as a fallback.
     public static func read(_ data: Data) throws -> Backup {
-        if let file = try? JSONDecoder().decode(File.self, from: data), readableFormats.contains(file.format) {
-            guard file.version <= currentVersion else { throw Failure.tooNew(file.version) }
+        let decoder = JSONDecoder()
+        guard let header = try? decoder.decode(Header.self, from: data) else { throw Failure.unreadable }
+        if let format = header.format {
+            guard readableFormats.contains(format), header.version > 0 else { throw Failure.unreadable }
+            guard header.version <= currentVersion else { throw Failure.tooNew(header.version) }
+            guard let file = try? decoder.decode(File.self, from: data), PlanStore.isValidMedicationList(file.medications) else {
+                throw Failure.unreadable
+            }
             return Backup(createdAt: UTCTimestamp.date(from: file.createdAt) ?? .distantPast, medications: file.medications,
                           preferences: file.preferences ?? [:])
         }

@@ -11,12 +11,16 @@ struct TakeDueMedicationsIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let now = Date.now
-        let due = AppModel.shared.medications.filter { $0.planner.restingUntil(now: now) == nil && now >= $0.planner.currentDose(now: now).dueAt }
+        let model = AppModel.shared
+        let due = model.dueDoses(now: now)
         guard !due.isEmpty else {
             return .result(dialog: IntentDialog(stringLiteral: L("Chưa tới giờ uống thuốc nào.", "Nothing is due right now.")))
         }
-        await AppModel.shared.markTaken(due.map(\.id), now: now)
-        let names = due.map(\.name).joined(separator: ", ")
+        let taken = await model.markTaken(dosesDueAt: due, now: now)
+        guard !taken.isEmpty else {
+            return .result(dialog: IntentDialog(stringLiteral: L("Không ghi được lần uống. Mở Pillot để kiểm tra.", "Could not log a dose. Open Pillot to check.")))
+        }
+        let names = taken.map(\.name).joined(separator: ", ")
         return .result(dialog: IntentDialog(stringLiteral: L("Đã ghi: \(names).", "Logged \(names).")))
     }
 }

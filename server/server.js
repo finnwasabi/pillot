@@ -15,6 +15,9 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DOSES_PER_DAY = [1, 2, 3, 4, 6];
 const MESSAGE_LIMIT = 300;
 const MEDICATION_LIMIT = 30;
+const TELEGRAM_TEXT_LIMIT = 4096;
+const REPORT_HEADING = "☀️ <b>Good morning!</b> Here's today's check-in.";
+const nameSegments = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 /// Same as the app's late tolerance: a dose this soon after the deadline is still on time.
 const NUDGE_AFTER_MS = 15 * 60 * 1000;
 
@@ -44,9 +47,21 @@ export function vnDateKey(ms) {
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const frequency = (n) => (n === 1 ? 'daily' : `${n}× a day`);
 
+function displayName(value) {
+  const name = value.trim().replace(/[\r\n]+/g, ' ');
+  if (name.length <= 512) return esc(name);
+  // A grapheme can contain thousands of code units. Keep it whole and bound its rendered name.
+  let end = 0;
+  for (const { index, segment } of nameSegments.segment(name)) {
+    if (index + segment.length > 512) break;
+    end = index + segment.length;
+  }
+  return esc(`${name.slice(0, end)}…`);
+}
+
 /// The user's name sent with the snapshot, or a neutral word without one. Already escaped.
-export const who = (s) => esc((typeof s?.name === 'string' && s.name.trim()) || 'They');
-const medName = (m) => `<b>${esc(m.name?.trim() || 'Their pill')}</b>`;
+export const who = (s) => displayName((typeof s?.name === 'string' && s.name.trim()) || 'They');
+const medName = (m) => `<b>${displayName(m.name?.trim() || 'Their pill')}</b>`;
 
 // MARK: Snapshots
 
@@ -68,14 +83,29 @@ export function normalize(s) {
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const isCount = (v) => Number.isInteger(v) && v >= 0;
+function isShortName(value) {
+  if (typeof value !== 'string') return false;
+  if (value.length <= 60) return true;
+  let count = 0;
+  for (const _ of nameSegments.segment(value)) {
+    if (++count > 60) return false;
+  }
+  return true;
+}
+
+function isTimestamp(value) {
+  if (typeof value !== 'string' || !ISO.test(value)) return false;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === `${value.slice(0, -1)}.000Z`;
+}
 
 function validateMedicationFields(m, { requireId }) {
   if (requireId && (typeof m.id !== 'string' || !m.id || m.id.length > 64)) return 'id must be a short string';
   for (const key of ['nextDueAt', 'deadlineAt']) {
-    if (typeof m[key] !== 'string' || !ISO.test(m[key])) return `${key} must be a UTC ISO 8601 timestamp`;
+    if (!isTimestamp(m[key])) return `${key} must be a UTC ISO 8601 timestamp`;
   }
   for (const key of ['lastTakenAt', 'pausedUntil']) {
-    if (m[key] !== null && (typeof m[key] !== 'string' || !ISO.test(m[key]))) return `${key} must be a timestamp or null`;
+    if (m[key] !== null && !isTimestamp(m[key])) return `${key} must be a timestamp or null`;
   }
   for (const key of ['pillsTotal', 'pillsRemaining']) {
     if (m[key] !== null && !isCount(m[key])) return `${key} must be a non-negative integer or null`;
@@ -88,8 +118,8 @@ function validateMedicationFields(m, { requireId }) {
 /// Checks the contract in docs/spec.md (version 2, or the older version 1). Returns the first problem found, or null.
 export function validateSnapshot(s) {
   if (!s || typeof s !== 'object') return 'body must be a JSON object';
-  if (s.name != null && (typeof s.name !== 'string' || s.name.length > 60)) return 'name must be a short string or null';
-  if (typeof s.updatedAt !== 'string' || !ISO.test(s.updatedAt)) return 'updatedAt must be a UTC ISO 8601 timestamp';
+  if (s.name != null && !isShortName(s.name)) return 'name must be a short string or null';
+  if (!isTimestamp(s.updatedAt)) return 'updatedAt must be a UTC ISO 8601 timestamp';
   if (s.schemaVersion === 1) {
     for (const key of ['daysTaken', 'missedCount']) if (!isCount(s[key])) return `${key} must be a non-negative integer`;
     for (const key of ['lateCount', 'madeUpCount']) {
@@ -99,9 +129,10 @@ export function validateSnapshot(s) {
   }
   if (s.schemaVersion !== 2) return 'schemaVersion must be 1 or 2';
   if (!Array.isArray(s.medications) || s.medications.length > MEDICATION_LIMIT) return `medications must be a list of at most ${MEDICATION_LIMIT}`;
+  const ids = new Set();
   for (const [i, m] of s.medications.entries()) {
     if (!m || typeof m !== 'object') return `medications[${i}] must be an object`;
-    if (typeof m.name !== 'string' || m.name.length > 60) return `medications[${i}].name must be a short string`;
+    if (!isShortName(m.name)) return `medications[${i}].name must be a short string`;
     if (!DOSES_PER_DAY.includes(m.dosesPerDay)) return `medications[${i}].dosesPerDay must be one of ${DOSES_PER_DAY.join(', ')}`;
     for (const key of ['takenCount', 'missedCount', 'lateCount', 'madeUpCount']) {
       if (!isCount(m[key])) return `medications[${i}].${key} must be a non-negative integer`;
@@ -117,6 +148,8 @@ export function validateSnapshot(s) {
     }
     const problem = validateMedicationFields(m, { requireId: true });
     if (problem) return `medications[${i}].${problem}`;
+    if (ids.has(m.id)) return `medications[${i}].id must be unique`;
+    ids.add(m.id);
   }
   return null;
 }
@@ -148,11 +181,10 @@ function medicationStatus(m, now) {
   return lines.join('\n');
 }
 
-/// Full status for /check and the 09:00 report. All times are Vietnam time.
-export function statusText(snapshot, now = Date.now()) {
+function statusParts(snapshot, now) {
   const s = normalize(snapshot);
-  if (!s) return '📭 Nothing here yet. Once the app is connected with /link, its updates show up here.';
-  const title = s.name?.trim() ? `💊 <b>${esc(s.name.trim())}'s meds</b>` : "💊 <b>Pillot</b>";
+  if (!s) return ['📭 Nothing here yet. Once the app is connected with /link, its updates show up here.'];
+  const title = s.name?.trim() ? `💊 <b>${displayName(s.name)}'s meds</b>` : "💊 <b>Pillot</b>";
   const blocks = s.medications.length
     ? s.medications.map((m) => medicationStatus(m, now))
     : ['No medications set up in the app yet.'];
@@ -160,7 +192,34 @@ export function statusText(snapshot, now = Date.now()) {
   const footer = age > 24 * 3600 * 1000
     ? `⚠️ Not synced since ${vnTime(s.updatedAt)} · ${vnDay(s.updatedAt)}. The app sends updates whenever it's online.`
     : `🕘 Updated ${vnTime(s.updatedAt)} VN time`;
-  return [title, ...blocks, footer].join('\n\n');
+  return [title, ...blocks, footer];
+}
+
+/// Full status for /check and the 09:00 report. All times are Vietnam time.
+export function statusText(snapshot, now = Date.now()) {
+  return statusParts(snapshot, now).join('\n\n');
+}
+
+function splitByLength(parts, separator, limit) {
+  const chunks = [];
+  for (const part of parts) {
+    const last = chunks.at(-1);
+    if (last !== undefined && last.length + separator.length + part.length <= limit) {
+      chunks[chunks.length - 1] = `${last}${separator}${part}`;
+    } else {
+      chunks.push(part);
+    }
+  }
+  return chunks;
+}
+
+function statusPages(snapshot, now) {
+  const [title, ...blocks] = statusParts(snapshot, now);
+  if (!blocks.length) return [title];
+  const footer = blocks.pop();
+  const fixedLength = title.length + footer.length + REPORT_HEADING.length + 6;
+  return splitByLength(blocks, '\n\n', TELEGRAM_TEXT_LIMIT - fixedLength)
+    .map((page) => [title, page, footer].join('\n\n'));
 }
 
 /// Message sent on new data. Only for things worth knowing, not on every app launch.
@@ -232,10 +291,11 @@ export function createStore(dir) {
   return {
     get: () => state,
     set(patch) {
-      state = { ...state, ...patch };
+      const next = { ...state, ...patch };
       // Write a temporary file and rename it, so a half-written file never exists.
-      writeFileSync(`${file}.tmp`, JSON.stringify(state, null, 2));
+      writeFileSync(`${file}.tmp`, JSON.stringify(next, null, 2));
       renameSync(`${file}.tmp`, file);
+      state = next;
     },
   };
 }
@@ -283,10 +343,15 @@ export function createApp({ store, apiToken, notify = () => {} }) {
       snapshot = normalize(snapshot);
       const { snapshot: previous, message } = store.get();
       // Keep only the newest; older ones (sent late after being offline) are ignored.
-      if (previous && Date.parse(snapshot.updatedAt) <= Date.parse(previous.updatedAt)) {
+      if (previous && isTimestamp(previous.updatedAt) && Date.parse(snapshot.updatedAt) <= Date.parse(previous.updatedAt)) {
         return send(200, { stale: true, message });
       }
-      store.set({ snapshot });
+      try {
+        store.set({ snapshot });
+      } catch (error) {
+        console.error('snapshot write', error.code ?? error.name);
+        return send(503, { error: 'could not save snapshot' });
+      }
       const text = changeText(previous, snapshot);
       if (text) notify(text);
       send(200, { stale: false, message });
@@ -302,15 +367,34 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(params),
+      signal: AbortSignal.timeout(method === 'getUpdates' ? 65_000 : 15_000),
     });
     const json = await response.json();
     if (!json.ok) throw new Error(`${method}: ${json.description}`);
     return json.result;
   };
   const refreshButton = { inline_keyboard: [[{ text: '🔄 Refresh', callback_data: 'refresh' }]] };
-  const say = (text, extra = {}) => call('sendMessage', {
-    chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...extra,
-  });
+  const say = async (text, extra = {}) => {
+    const chunks = text.length <= TELEGRAM_TEXT_LIMIT ? [text] : splitByLength(text.split('\n'), '\n', TELEGRAM_TEXT_LIMIT);
+    let result;
+    for (const [index, chunk] of chunks.entries()) {
+      result = await call('sendMessage', {
+        chat_id: chatId, text: chunk, parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        ...(index === chunks.length - 1 ? extra : {}),
+      });
+    }
+    return result;
+  };
+
+  const statusView = (page = 0, now = Date.now()) => {
+    const pages = statusPages(store.get().snapshot, now);
+    page = Math.min(page, pages.length - 1);
+    const button = (text, index) => ({ text, callback_data: index === 0 ? 'refresh' : `status:${index}` });
+    const controls = [button('🔄 Refresh', page)];
+    if (page > 0) controls.unshift(button('‹ Previous', page - 1));
+    if (page < pages.length - 1) controls.push(button('Next ›', page + 1));
+    return { text: pages[page], reply_markup: { inline_keyboard: [controls] } };
+  };
 
   const handle = async (text) => {
     const trimmed = text.trim();
@@ -322,8 +406,10 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
         return say(`👋 Hi! ${HELP}\n\nFirst step: send /link and paste the code into the app.`);
       case '/help':
         return say(HELP);
-      case '/check':
-        return say(statusText(store.get().snapshot), { reply_markup: refreshButton });
+      case '/check': {
+        const { text, reply_markup } = statusView();
+        return say(text, { reply_markup });
+      }
       case '/msg': {
         if (!argument) {
           const current = store.get().message;
@@ -351,17 +437,18 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
         ].join('\n'), { reply_markup: { inline_keyboard: [[{ text: '📋 Copy code', copy_text: { text: code } }]] } });
       }
       default:
-        return say(`🤔 I don't know ${esc(command)}. Here's what I can do:\n\n${HELP}`);
+        return say(`🤔 I don't know ${esc(command.slice(0, 100))}. Here's what I can do:\n\n${HELP}`);
     }
   };
 
   /// The Refresh button under a status: redraws it in place.
   const handleCallback = async (query) => {
-    if (query.data !== 'refresh' || !query.message) return call('answerCallbackQuery', { callback_query_id: query.id });
+    const page = query.data === 'refresh' ? 0 : /^status:(\d{1,2})$/.exec(query.data)?.[1];
+    if (page === undefined || !query.message) return call('answerCallbackQuery', { callback_query_id: query.id });
     try {
       await call('editMessageText', {
-        chat_id: chatId, message_id: query.message.message_id, text: statusText(store.get().snapshot),
-        parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: refreshButton,
+        chat_id: chatId, message_id: query.message.message_id, ...statusView(Number(page)),
+        parse_mode: 'HTML', link_preview_options: { is_disabled: true },
       });
       return call('answerCallbackQuery', { callback_query_id: query.id, text: '🔄 Updated' });
     } catch (error) {
@@ -390,17 +477,26 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
   };
 
   /// The 09:00 Vietnam time report, once a day even across restarts.
+  let sendingReport = false;
   const dailyReport = async (now = Date.now()) => {
     const vnNow = new Date(now + VN_OFFSET_MS);
     const today = vnDateKey(now);
-    if (vnNow.getUTCHours() < 9 || store.get().lastReportDay === today) return;
-    store.set({ lastReportDay: today });
-    await say(`☀️ <b>Good morning!</b> Here's today's check-in.\n\n${statusText(store.get().snapshot, now)}`, { reply_markup: refreshButton });
+    if (sendingReport || vnNow.getUTCHours() < 9 || store.get().lastReportDay === today) return;
+    sendingReport = true;
+    try {
+      const { text, reply_markup } = statusView(0, now);
+      await say(`${REPORT_HEADING}\n\n${text}`, { reply_markup });
+      store.set({ lastReportDay: today });
+    } finally {
+      sendingReport = false;
+    }
   };
 
   /// A heads-up to the partner when a dose is past its deadline and the app has not reported it. The snapshot carries
   /// the deadline, so this only compares times; the phone may just be offline, and the message says so. Once per deadline.
+  let sendingNudges = false;
   const checkDeadlines = async (now = Date.now()) => {
+    if (sendingNudges) return;
     const s = normalize(store.get().snapshot);
     if (!s) return;
     const nudged = { ...(store.get().nudged ?? {}) };
@@ -411,10 +507,15 @@ export function createBot({ token, chatId, store, publicUrl, apiToken, fetchImpl
       return !resting && !reported && now > Date.parse(m.deadlineAt) + NUDGE_AFTER_MS && nudged[m.id] !== m.deadlineAt;
     });
     if (!late.length) return;
-    for (const m of late) nudged[m.id] = m.deadlineAt;
-    store.set({ nudged });
     const lines = late.map((m) => `⏰ ${medName(m)} passed its deadline at ${vnTime(m.deadlineAt)} and no dose has come in yet.`);
-    await say(`${lines.join('\n')}\nThe phone may just be offline, but a gentle nudge to ${who(s)} could help 💛`, { reply_markup: refreshButton });
+    sendingNudges = true;
+    try {
+      await say(`${lines.join('\n')}\nThe phone may just be offline, but a gentle nudge to ${who(s)} could help 💛`, { reply_markup: refreshButton });
+      const sent = Object.fromEntries(late.map((m) => [m.id, m.deadlineAt]));
+      store.set({ nudged: { ...nudged, ...sent } });
+    } finally {
+      sendingNudges = false;
+    }
   };
 
   /// Command menu and profile texts, set on every start so they follow the code.

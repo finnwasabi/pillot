@@ -1,6 +1,5 @@
 import AlarmKit
 import SwiftUI
-import UserNotifications
 
 // Explains why alarm permission is needed, then asks for it.
 struct OnboardingView: View {
@@ -38,7 +37,7 @@ struct OnboardingView: View {
                     Task {
                         // Declining still lets the user in; Today then shows the scheduling warning.
                         _ = try? await AlarmManager.shared.requestAuthorization()
-                        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+                        await model.checkNotifications(onboarding: true)
                         await model.resync()
                         onFinish()
                     }

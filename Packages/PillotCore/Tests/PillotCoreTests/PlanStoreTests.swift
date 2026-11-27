@@ -39,6 +39,12 @@ import Testing
         #expect(try store.load() == [a, b])
     }
 
+    @Test func duplicateMedicationIDsCannotBeLoaded() throws {
+        let medication = Medication(name: "Iron")
+        try store.save([medication, medication])
+        #expect(throws: (any Error).self) { try store.load() }
+    }
+
     @Test func unknownVersionThrows() throws {
         try FileManager.default.createDirectory(at: store.url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(#"{"version": 9, "medications": []}"#.utf8).write(to: store.url)

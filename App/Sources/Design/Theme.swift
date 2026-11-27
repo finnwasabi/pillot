@@ -40,11 +40,13 @@ struct SlidingPill: View {
     var body: some View {
         GeometryReader { proxy in
             let width = (proxy.size.width - spacing * CGFloat(count - 1)) / CGFloat(max(1, count))
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(Palette.yellow)
-                .strokeBorder(Palette.ink, lineWidth: lineWidth)
-                .frame(width: width)
-                .offset(x: CGFloat(index) * (width + spacing))
+            if width.isFinite, width > 0 {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Palette.yellow)
+                    .strokeBorder(Palette.ink, lineWidth: lineWidth)
+                    .frame(width: width)
+                    .offset(x: CGFloat(index) * (width + spacing))
+            }
         }
     }
 }
